@@ -1,0 +1,36 @@
+## Game Over UI Prefab Setup
+
+To properly set up the GameOverUI, create this hierarchy in Unity:
+
+1. Create a Canvas (UI > Canvas)
+   - Set Canvas to Screen Space - Overlay
+   - Scale Mode: Scale With Screen Size
+   - Reference Resolution: 1920x1080
+   - Set Sort Order to a high value (e.g., 100) to ensure it displays on top
+
+2. Under Canvas, create a Panel called "GameOverPanel"
+   - Anchor: Stretch all sides (full screen)
+   - Add Image component with a semi-transparent black color (RGBA: 0,0,0,0.8)
+   - Set this as the `gameOverPanel` reference in the GameOverUI script
+
+3. Under GameOverPanel, create a Text (TMP) object called "MessageText"
+   - Anchor: Center
+   - Font Size: 72
+   - Font Style: Bold
+   - Color: White or Gold
+   - Alignment: Center
+   - Text: "VICTORY!"
+   - Set this as the `messageText` reference in the GameOverUI script
+
+4. Under GameOverPanel, create a Button called "RestartButton"
+   - Anchor: Center
+   - Position: 0, -150, 0 (below the message)
+   - Size: 300x80
+   - Button text: "RESTART"
+   - Set this as the `restartButton` reference in the GameOverUI script
+
+5. Add the GameOverUI script to the Canvas
+
+6. Initially, set the GameOverPanel to inactive in the Inspector
+
+This setup creates a full-screen overlay with a message and restart button that appears when the game ends. 
