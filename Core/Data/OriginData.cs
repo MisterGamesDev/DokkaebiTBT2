@@ -1,6 +1,7 @@
 using UnityEngine;
 using System.Collections.Generic;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Common;
 
 namespace Dokkaebi.Core.Data
 {

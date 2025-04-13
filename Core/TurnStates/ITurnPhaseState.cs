@@ -20,6 +20,8 @@ namespace Dokkaebi.Core.TurnStates
         int GetActivePlayer();
         bool AllowsMovement();
         bool AllowsAuraActivation(bool isPlayerOne);
+        float GetStateTimer();
+        float GetPhaseTimeLimit();
     }
 
     /// <summary>
@@ -29,13 +31,34 @@ namespace Dokkaebi.Core.TurnStates
     {
         protected readonly TurnStateContext context;
         protected float stateTimer;
-        protected float phaseTimeLimit = 30f;
+        protected float phaseTimeLimit;
         
         public abstract TurnPhase PhaseType { get; }
         
         protected BaseTurnPhaseState(TurnStateContext context)
         {
             this.context = context;
+            // Set the phase time limit based on the phase type
+            phaseTimeLimit = GetPhaseTimeLimit();
+        }
+        
+        protected virtual float GetPhaseTimeLimit()
+        {
+            var turnSystem = context.GetTurnSystem();
+            switch (PhaseType)
+            {
+                case TurnPhase.Opening:
+                    return turnSystem.OpeningPhaseDuration;
+                case TurnPhase.MovementPhase:
+                    return turnSystem.MovementPhaseDuration;
+                case TurnPhase.AuraPhase1A:
+                case TurnPhase.AuraPhase1B:
+                case TurnPhase.AuraPhase2A:
+                case TurnPhase.AuraPhase2B:
+                    return turnSystem.AuraChargingPhaseDuration;
+                default:
+                    return 30f; // Default fallback
+            }
         }
         
         public virtual void Enter()
@@ -48,10 +71,16 @@ namespace Dokkaebi.Core.TurnStates
         {
             stateTimer += deltaTime;
             
-            // Auto-advance when time expires
-            if (stateTimer >= phaseTimeLimit && CanTransition())
+            // Log timer state periodically (every second)
+            if (Mathf.FloorToInt(stateTimer) > Mathf.FloorToInt(stateTimer - deltaTime))
             {
-                SmartLogger.Log($"Phase time limit reached for {PhaseType}", LogCategory.TurnSystem);
+                SmartLogger.Log($"[{PhaseType}] Phase timer: {stateTimer:F2}/{phaseTimeLimit:F2}, CanTransition: {CanTransition()}", LogCategory.TurnSystem);
+            }
+            
+            // Auto-advance when time expires and phase limit is positive
+            if (phaseTimeLimit > 0 && stateTimer >= phaseTimeLimit && CanTransition())
+            {
+                SmartLogger.Log($"[{PhaseType}] Phase time limit reached ({stateTimer:F2} >= {phaseTimeLimit:F2}). CanTransition()={CanTransition()}. Attempting TransitionToNextState().", LogCategory.TurnSystem, context.GetTurnSystem() as MonoBehaviour);
                 context.TransitionToNextState();
             }
         }
@@ -87,16 +116,25 @@ namespace Dokkaebi.Core.TurnStates
         
         public virtual bool AllowsAuraActivation(bool isPlayerOne)
         {
-            bool isAuraPhase = PhaseType == TurnPhase.AuraPhase1A || 
-                              PhaseType == TurnPhase.AuraPhase1B || 
-                              PhaseType == TurnPhase.AuraPhase2A || 
-                              PhaseType == TurnPhase.AuraPhase2B;
-            
-            if (!isAuraPhase)
-                return false;
-                
-            int activePlayer = GetActivePlayer();
-            return (isPlayerOne && activePlayer == 1) || (!isPlayerOne && activePlayer == 2);
+            // Only allow aura activation in the appropriate phase for each player
+            if (isPlayerOne)
+            {
+                return PhaseType == TurnPhase.AuraPhase1A || PhaseType == TurnPhase.AuraPhase2A;
+            }
+            else
+            {
+                return PhaseType == TurnPhase.AuraPhase1B || PhaseType == TurnPhase.AuraPhase2B;
+            }
+        }
+
+        public float GetStateTimer()
+        {
+            return stateTimer;
+        }
+
+        float ITurnPhaseState.GetPhaseTimeLimit()
+        {
+            return phaseTimeLimit;
         }
     }
 
@@ -132,10 +170,38 @@ namespace Dokkaebi.Core.TurnStates
     {
         public override TurnPhase PhaseType => TurnPhase.MovementPhase;
         
-        public MovementPhaseState(TurnStateContext context) : base(context) { }
+        public MovementPhaseState(TurnStateContext context) : base(context) 
+        {
+            SmartLogger.Log($"[MovementPhaseState] Initialized with phaseTimeLimit: {phaseTimeLimit:F2}", LogCategory.TurnSystem);
+        }
+        
+        public override void Enter()
+        {
+            base.Enter();
+            SmartLogger.Log("[MovementPhaseState] Entered movement phase", LogCategory.TurnSystem);
+        }
+        
+        public override void Exit()
+        {
+            SmartLogger.Log("[MovementPhaseState] Exiting movement phase, executing pending moves", LogCategory.TurnSystem);
+            base.Exit();
+            
+            // Execute any remaining pending moves before transitioning
+            var turnSystem = context.GetTurnSystem();
+            if (turnSystem is DokkaebiTurnSystemCore core)
+            {
+                SmartLogger.Log("[MovementPhaseState] Executing any remaining pending moves before exiting movement phase", LogCategory.TurnSystem);
+                core.ExecuteAllPendingMoves();
+            }
+            else
+            {
+                SmartLogger.LogWarning("[MovementPhaseState] TurnSystem is not DokkaebiTurnSystemCore, skipping pending moves execution", LogCategory.TurnSystem);
+            }
+        }
         
         public override ITurnPhaseState GetNextState()
         {
+            SmartLogger.Log("[MovementPhaseState] Creating next state (AuraPhase1A)", LogCategory.TurnSystem);
             return new AuraPhase1AState(context);
         }
         
@@ -158,6 +224,12 @@ namespace Dokkaebi.Core.TurnStates
         {
             return new AuraPhase1BState(context);
         }
+
+        public override void Exit()
+        {
+            SmartLogger.Log("[AuraPhase1AState.Exit] Exiting Phase 1A", LogCategory.TurnSystem);
+            base.Exit();
+        }
     }
 
     /// <summary>
@@ -173,6 +245,12 @@ namespace Dokkaebi.Core.TurnStates
         {
             return new AuraPhase2AState(context);
         }
+
+        public override void Exit()
+        {
+            SmartLogger.Log("[AuraPhase1BState.Exit] Exiting Phase 1B", LogCategory.TurnSystem);
+            base.Exit();
+        }
     }
 
     /// <summary>
@@ -187,6 +265,12 @@ namespace Dokkaebi.Core.TurnStates
         public override ITurnPhaseState GetNextState()
         {
             return new AuraPhase2BState(context);
+        }
+
+        public override void Exit()
+        {
+            SmartLogger.Log("[AuraPhase2AState.Exit] Exiting Phase 2A", LogCategory.TurnSystem);
+            base.Exit();
         }
     }
 
@@ -204,17 +288,23 @@ namespace Dokkaebi.Core.TurnStates
             // After phase 2B, we go back to movement phase of the next turn
             return new MovementPhaseState(context);
         }
-        
+
         public override void Exit()
         {
+            SmartLogger.Log("[AuraPhase2BState.Exit START] Beginning turn resolution phase", LogCategory.TurnSystem);
             base.Exit();
             
+            SmartLogger.Log("[AuraPhase2BState.Exit] Triggering turn resolution end", LogCategory.TurnSystem);
+            SmartLogger.Log("[AuraPhase2BState.Exit] About to trigger TurnResolutionEnd event - this should trigger zone effects", LogCategory.TurnSystem);
             // Signal that the turn is about to end and resolve turn effects
             // (This will trigger zone effects, etc. via TurnResolutionEnd event)
             context.TriggerTurnResolutionEnd();
             
+            SmartLogger.Log("[AuraPhase2BState.Exit] Incrementing turn counter", LogCategory.TurnSystem);
             // Signal that we're about to start a new turn
             context.IncrementTurn();
+            
+            SmartLogger.Log("[AuraPhase2BState.Exit END] Turn resolution phase complete", LogCategory.TurnSystem);
         }
     }
 }

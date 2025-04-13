@@ -3,11 +3,14 @@ using UnityEngine;
 using Dokkaebi.Grid;
 using Dokkaebi.Units;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Core.Data;
+using Dokkaebi.Utilities;
+using Dokkaebi.Core;
 
 namespace Dokkaebi.Core.Networking.Commands
 {
     /// <summary>
-    /// Command for using a unit's ability
+    /// Command for planning a unit's ability use
     /// </summary>
     public class AbilityCommand : CommandBase
     {
@@ -95,111 +98,186 @@ namespace Dokkaebi.Core.Networking.Commands
 
         public override bool Validate()
         {
-            var unitManager = Object.FindObjectOfType<UnitManager>();
+            SmartLogger.Log($"[AbilityCommand.Validate] --- Start Validation --- Unit: {UnitId}, AbilityIdx: {AbilityIndex}, Target: {TargetPosition}", LogCategory.Ability);
+            
+            var unitManager = UnitManager.Instance;
+            SmartLogger.Log($"[AbilityCommand.Validate] Checking UnitManager... Found: {unitManager != null}", LogCategory.Ability);
+            
             if (unitManager == null)
             {
-                DebugLog("Cannot validate: UnitManager not found");
+                SmartLogger.LogWarning("[AbilityCommand.Validate] FAILED: UnitManager not found", LogCategory.Ability);
                 return false;
             }
 
-            DokkaebiUnit unit = unitManager.GetUnitById(UnitId);
+            var unit = unitManager.GetUnitById(UnitId);
+            SmartLogger.Log($"[AbilityCommand.Validate] Checking Unit... Found: {(unit != null ? unit.GetUnitName() : "NULL")}", LogCategory.Ability);
+            
             if (unit == null)
             {
-                DebugLog($"Cannot use ability: Unit {UnitId} not found");
+                SmartLogger.LogWarning($"[AbilityCommand.Validate] FAILED: Unit {UnitId} not found", LogCategory.Ability);
                 return false;
             }
 
-            // Check if the player owns this unit
+            SmartLogger.Log($"[AbilityCommand.Validate] Checking Ownership... IsPlayer: {unit.IsPlayer()}", LogCategory.Ability);
+            
             if (!unit.IsPlayer())
             {
-                DebugLog($"Cannot use ability: Unit {UnitId} not owned by player");
+                SmartLogger.LogWarning($"[AbilityCommand.Validate] FAILED: Unit {UnitId} not owned by player", LogCategory.Ability);
                 return false;
             }
 
-            // Check if it's the aura phase
-            var turnSystemCore = Object.FindObjectOfType<DokkaebiTurnSystemCore>();
-            if (turnSystemCore != null && !turnSystemCore.CanUnitUseAura(unit))
+            var turnSystemCore = DokkaebiTurnSystemCore.Instance;
+            var canUseAuraCheck = turnSystemCore?.CanUnitUseAura(unit) ?? false;
+            
+            SmartLogger.Log($"[AbilityCommand.Validate] Checking Turn/Phase... turnSystemCore Found: {turnSystemCore != null}, CanUnitUseAura result: {canUseAuraCheck}", LogCategory.Ability);
+            
+            if (!canUseAuraCheck)
             {
-                DebugLog($"Cannot use ability: Not in aura phase or not unit's turn");
+                SmartLogger.LogWarning($"[AbilityCommand.Validate] FAILED: Not correct turn/phase or unit cannot use aura. Current Phase: {turnSystemCore?.CurrentPhase}", LogCategory.Ability);
                 return false;
             }
 
-            // Check if the unit has already used an ability
-            if (unit.HasPendingAbility())
-            {
-                DebugLog($"Cannot use ability: Unit {UnitId} has already used an ability");
-                return false;
-            }
-
-            // Get the ability
             var abilities = unit.GetAbilities();
-            if (AbilityIndex < 0 || AbilityIndex >= abilities.Count)
+            var abilityIndexValid = AbilityIndex >= 0 && AbilityIndex < abilities.Count;
+            SmartLogger.Log($"[AbilityCommand.Validate] Checking Ability Index... Index: {AbilityIndex}, Count: {abilities.Count}, Valid: {abilityIndexValid}", LogCategory.Ability);
+            
+            if (!abilityIndexValid)
             {
-                DebugLog($"Cannot use ability: Invalid ability index {AbilityIndex}");
+                SmartLogger.LogWarning($"[AbilityCommand.Validate] FAILED: Invalid ability index {AbilityIndex}", LogCategory.Ability);
                 return false;
             }
 
             var ability = abilities[AbilityIndex];
-
-            // Check if the ability is on cooldown
-            if (unit.IsOnCooldown(ability.abilityType))
+            var isOnCooldownCheck = unit.IsOnCooldown(ability.abilityType);
+            SmartLogger.Log($"[AbilityCommand.Validate] Checking Cooldown... AbilityType: {ability.abilityType}, IsOnCooldown: {isOnCooldownCheck}", LogCategory.Ability);
+            
+            if (isOnCooldownCheck)
             {
-                DebugLog($"Cannot use ability: Ability {ability.displayName} is on cooldown");
+                SmartLogger.LogWarning($"[AbilityCommand.Validate] FAILED: Ability {ability.displayName} is on cooldown", LogCategory.Ability);
                 return false;
             }
 
-            // Check range
+            // Convert positions and calculate grid-based distance
             GridPosition unitPos = unit.GetGridPosition();
-            GridPosition targetGridPos = DokkaebiGridConverter.Vector2IntToGrid(TargetPosition);
+            GridPosition targetGridPos = GridPosition.FromVector2Int(TargetPosition);
             int distance = GridPosition.GetManhattanDistance(unitPos, targetGridPos);
-
-            if (distance > ability.range)
+            bool rangeCheck = distance <= ability.range;
+            SmartLogger.Log($"[AbilityCommand.Validate] Checking Range... Distance: {distance}, AbilityRange: {ability.range}, InRange: {rangeCheck}", LogCategory.Ability);
+            
+            if (!rangeCheck)
             {
-                DebugLog($"Cannot use ability: Target position {TargetPosition} is out of range (max range: {ability.range})");
+                SmartLogger.LogWarning($"[AbilityCommand.Validate] FAILED: Target position {TargetPosition} is out of range (max range: {ability.range})", LogCategory.Ability);
                 return false;
             }
 
+            bool targetCheck = ValidateTarget(unit, ability, targetGridPos);
+            SmartLogger.Log($"[AbilityCommand.Validate] Checking Target Validity... Valid: {targetCheck}", LogCategory.Ability);
+            
+            if (!targetCheck)
+            {
+                SmartLogger.LogWarning($"[AbilityCommand.Validate] FAILED: Invalid target for ability {ability.displayName}", LogCategory.Ability);
+                return false;
+            }
+
+            SmartLogger.Log("[AbilityCommand.Validate] --- Validation PASSED ---", LogCategory.Ability);
+            return true;
+        }
+
+        private bool ValidateTarget(DokkaebiUnit unit, AbilityData ability, GridPosition targetPos)
+        {
+            SmartLogger.Log($"[AbilityCommand.ValidateTarget] Starting target validation for ability {ability.displayName}", LogCategory.Ability);
+            
+            var unitManager = UnitManager.Instance;
+            SmartLogger.Log($"[AbilityCommand.ValidateTarget] Checking UnitManager... Found: {unitManager != null}", LogCategory.Ability);
+            
+            if (unitManager == null)
+            {
+                SmartLogger.LogWarning("[AbilityCommand.ValidateTarget] FAILED: UnitManager not found", LogCategory.Ability);
+                return false;
+            }
+
+            var targetUnit = unitManager.GetUnitAtPosition(targetPos);
+            SmartLogger.Log($"[AbilityCommand.ValidateTarget] Target unit at position {targetPos}: {(targetUnit != null ? targetUnit.GetUnitName() : "NULL")}", LogCategory.Ability);
+
+            var isSelfTarget = targetUnit == unit;
+            var canTargetSelf = ability.targetsSelf;
+            SmartLogger.Log($"[AbilityCommand.ValidateTarget] Self-targeting check - Is self: {isSelfTarget}, Can target self: {canTargetSelf}, Unit IDs match: {targetUnit?.GetUnitId() == unit?.GetUnitId()}", LogCategory.Ability);
+            
+            if (isSelfTarget && !canTargetSelf)
+            {
+                SmartLogger.LogWarning("[AbilityCommand.ValidateTarget] FAILED: Cannot target self with this ability", LogCategory.Ability);
+                return false;
+            }
+
+            var isGroundTarget = targetUnit == null;
+            var canTargetGround = ability.targetsGround;
+            SmartLogger.Log($"[AbilityCommand.ValidateTarget] Ground-targeting check - Is ground: {isGroundTarget}, Can target ground: {canTargetGround}, Grid position valid: {GridManager.Instance?.IsValidGridPosition(targetPos) ?? false}", LogCategory.Ability);
+            
+            if (isGroundTarget && !canTargetGround)
+            {
+                SmartLogger.LogWarning("[AbilityCommand.ValidateTarget] FAILED: Cannot target ground with this ability", LogCategory.Ability);
+                return false;
+            }
+
+            if (targetUnit != null)
+            {
+                var isAlly = targetUnit.IsPlayer() == unit.IsPlayer();
+                SmartLogger.Log($"[AbilityCommand.ValidateTarget] Ally/Enemy check - Is ally: {isAlly}, Can target ally: {ability.targetsAlly}, Can target enemy: {ability.targetsEnemy}, Source IsPlayer: {unit.IsPlayer()}, Target IsPlayer: {targetUnit.IsPlayer()}", LogCategory.Ability);
+                
+                if (isAlly && !ability.targetsAlly)
+                {
+                    SmartLogger.LogWarning("[AbilityCommand.ValidateTarget] FAILED: Cannot target allies with this ability", LogCategory.Ability);
+                    return false;
+                }
+                
+                if (!isAlly && !ability.targetsEnemy)
+                {
+                    SmartLogger.LogWarning("[AbilityCommand.ValidateTarget] FAILED: Cannot target enemies with this ability", LogCategory.Ability);
+                    return false;
+                }
+            }
+
+            SmartLogger.Log("[AbilityCommand.ValidateTarget] Target validation PASSED", LogCategory.Ability);
             return true;
         }
 
         public override void Execute()
         {
-            var unitManager = Object.FindObjectOfType<UnitManager>();
-            if (unitManager == null)
+            var unitManager = UnitManager.Instance;
+            var abilityManager = UnityEngine.Object.FindObjectOfType<AbilityManager>();
+            
+            if (unitManager == null || abilityManager == null)
             {
-                DebugLog("Cannot execute: UnitManager not found");
+                SmartLogger.LogError("[AbilityCommand.Execute] UnitManager or AbilityManager not found", LogCategory.Ability);
                 return;
             }
 
-            var abilityManager = Object.FindObjectOfType<AbilityManager>();
-            if (abilityManager == null)
-            {
-                DebugLog("Cannot execute: AbilityManager not found");
-                return;
-            }
-
-            DokkaebiUnit unit = unitManager.GetUnitById(UnitId);
+            var unit = unitManager.GetUnitById(UnitId);
             if (unit == null)
             {
-                DebugLog($"Cannot execute: Unit {UnitId} not found");
+                SmartLogger.LogError($"[AbilityCommand.Execute] Unit {UnitId} not found", LogCategory.Ability);
                 return;
             }
 
-            // Get the ability
+            // Get ability data
             var abilities = unit.GetAbilities();
             if (AbilityIndex < 0 || AbilityIndex >= abilities.Count)
             {
-                DebugLog($"Cannot execute: Invalid ability index {AbilityIndex}");
+                SmartLogger.LogError($"[AbilityCommand.Execute] Invalid ability index {AbilityIndex}", LogCategory.Ability);
                 return;
             }
+            var abilityData = abilities[AbilityIndex];
 
-            var ability = abilities[AbilityIndex];
-            GridPosition targetGridPos = DokkaebiGridConverter.Vector2IntToGrid(TargetPosition);
+            // Convert Vector2Int to GridPosition for target
+            GridPosition targetGridPos = new GridPosition(TargetPosition.x, TargetPosition.y);
+            var targetUnit = unitManager.GetUnitAtPosition(targetGridPos);
 
-            // Set the pending ability for the unit
-            unit.PlanAbilityUse(AbilityIndex, targetGridPos);
+            // Determine if ability should be overloaded
+            bool isOverload = unit.GetCurrentMP() >= 7 && abilityData.requiresOverload;
+
+            SmartLogger.Log($"[AbilityCommand.Execute] Executing ability {abilityData.displayName} from unit {unit.GetDisplayName()} targeting position {targetGridPos} (Unit: {targetUnit?.GetDisplayName() ?? "None"})", LogCategory.Ability);
             
-            DebugLog($"Set pending ability {ability.displayName} for unit {UnitId} targeting position {TargetPosition}");
+            abilityManager.ExecuteAbility(abilityData, unit, targetGridPos, targetUnit as DokkaebiUnit, isOverload);
         }
     }
 } 

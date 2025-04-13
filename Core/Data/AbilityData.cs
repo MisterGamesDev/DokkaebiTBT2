@@ -2,6 +2,7 @@ using UnityEngine;
 using System.Collections.Generic;
 using Dokkaebi.Core.Data;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Common;
 
 namespace Dokkaebi.Core.Data
 {

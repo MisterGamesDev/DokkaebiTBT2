@@ -4,6 +4,7 @@ using Dokkaebi.Core.Data;
 using Dokkaebi.Utilities;
 using Dokkaebi.Units;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Common;
 
 namespace Dokkaebi.Core
 {
@@ -25,45 +26,57 @@ namespace Dokkaebi.Core
         public System.Action<bool> OnGameOver; // bool parameter is true if player 1 wins
         
         void Start()
-{
-    // Find managers
-    UnitManager unitManager = FindAnyObjectByType<UnitManager>();
-    DataManager dataManager = FindAnyObjectByType<DataManager>();
-    
-    // Get spawn data and create units
-    if (dataManager && unitManager)
-    {
-        UnitSpawnData spawnData = dataManager.GetUnitSpawnData();
-        if (spawnData)
         {
-            // Spawn player units
-            foreach (var unitInfo in spawnData.playerUnitSpawns)
-            {
-                if (unitInfo.unitDefinition != null)
-                {
-                    var gridPosition = GridPosition.FromVector2Int(unitInfo.spawnPosition);
-                    unitManager.SpawnUnit(unitInfo.unitDefinition, gridPosition, true);
-                    Debug.Log($"Spawning player: {unitInfo.unitDefinition.displayName} at {gridPosition}");
-                }
-            }
+            // Find managers
+            UnitManager unitManager = FindAnyObjectByType<UnitManager>();
+            DataManager dataManager = FindAnyObjectByType<DataManager>();
             
-            // Spawn enemy units
-            foreach (var unitInfo in spawnData.enemyUnitSpawns)
+            // Get spawn data and create units
+            if (dataManager && unitManager)
             {
-                if (unitInfo.unitDefinition != null)
+                UnitSpawnData spawnData = dataManager.GetUnitSpawnData();
+                if (spawnData)
                 {
-                    var gridPosition = GridPosition.FromVector2Int(unitInfo.spawnPosition);
-                    unitManager.SpawnUnit(unitInfo.unitDefinition, gridPosition, false);
-                    Debug.Log($"Spawning enemy: {unitInfo.unitDefinition.displayName} at {gridPosition}");
+                    // Spawn player units
+                    foreach (var unitInfo in spawnData.playerUnitSpawns)
+                    {
+                        if (unitInfo.unitDefinition != null)
+                        {
+                            var gridPosition = GridPosition.FromVector2Int(unitInfo.spawnPosition);
+                            unitManager.SpawnUnit(unitInfo.unitDefinition, gridPosition, true);
+                            SmartLogger.Log($"Spawning player: {unitInfo.unitDefinition.displayName} at {gridPosition}", LogCategory.Game, this);
+                        }
+                    }
+                    
+                    // Spawn enemy units
+                    foreach (var unitInfo in spawnData.enemyUnitSpawns)
+                    {
+                        if (unitInfo.unitDefinition != null)
+                        {
+                            var gridPosition = GridPosition.FromVector2Int(unitInfo.spawnPosition);
+                            unitManager.SpawnUnit(unitInfo.unitDefinition, gridPosition, false);
+                            SmartLogger.Log($"Spawning enemy: {unitInfo.unitDefinition.displayName} at {gridPosition}", LogCategory.Game, this);
+                        }
+                    }
+                }
+                else
+                {
+                    SmartLogger.LogError("No UnitSpawnData assigned in DataManager!", LogCategory.Game, this);
+                }
+
+                // Subscribe to turn system events
+                if (turnSystem != null)
+                {
+                    turnSystem.OnTurnResolutionEnd += CheckWinLossConditions;
+                }
+
+                // Subscribe to unit manager events
+                if (unitManager != null)
+                {
+                    unitManager.OnUnitDefeated += HandleUnitDefeated;
                 }
             }
         }
-        else
-        {
-            Debug.LogError("No UnitSpawnData assigned in DataManager!");
-        }
-    }
-}
         
         void OnDestroy() {
             // Unsubscribe from events
@@ -77,34 +90,31 @@ namespace Dokkaebi.Core
         }
         
         void BeginGame() {
-        // Reference to the turn system
-        if (turnSystem != null) {
+            // Reference to the turn system
+            if (turnSystem != null) {
+                // Make sure unitManager reference is valid
+                if (unitManager != null)
+                {
+                    SmartLogger.Log("[GameController.BeginGame] Calling UnitManager.SpawnUnitsFromConfiguration...", LogCategory.Game, this);
+                    unitManager.SpawnUnitsFromConfiguration();
+                }
+                else
+                {
+                    SmartLogger.LogError("[GameController.BeginGame] Cannot spawn units: UnitManager reference is null!", LogCategory.Game, this);
+                }
 
-            // --- ADD THIS SECTION ---
-            // Make sure unitManager reference is valid
-            if (unitManager != null)
-            {
-                Debug.Log("[GameController.BeginGame] Calling UnitManager.SpawnUnitsFromConfiguration..."); // Add this log too!
-                unitManager.SpawnUnitsFromConfiguration();
+                // Register all units (This will now find the newly spawned units)
+                var units = FindObjectsOfType<DokkaebiUnit>();
+                SmartLogger.Log($"[GameController.BeginGame] Found {units.Length} units to register", LogCategory.Game, this);
+                foreach (var unit in units) {
+                    SmartLogger.Log($"[GameController.BeginGame] Registering unit {unit.GetUnitName()} (ID: {unit.UnitId})", LogCategory.Game, this);
+                    turnSystem.RegisterUnit(unit);
+                }
+
+                // Log that the game has begun
+                SmartLogger.Log("Game has begun!", LogCategory.TurnSystem, this);
             }
-            else
-            {
-                 Debug.LogError("[GameController.BeginGame] Cannot spawn units: UnitManager reference is null!");
-            }
-            // --- END OF ADDED SECTION ---
-
-
-            // Register all units (This will now find the newly spawned units)
-            var units = FindObjectsOfType<DokkaebiUnit>();
-            foreach (var unit in units) {
-                turnSystem.RegisterUnit(unit);
-            }
-
-            // Log that the game has started
-            SmartLogger.Log("Game has begun!", LogCategory.TurnSystem);
         }
-        // Your manually added "Preparing..." log might be here or earlier.
-    }
         
         /// <summary>
         /// Handle when a unit is defeated
@@ -128,20 +138,25 @@ namespace Dokkaebi.Core
                 return;
             }
             
-            // Get lists of alive units for each player
-            var player1Units = unitManager.GetAliveUnitsByPlayer(true);
-            var player2Units = unitManager.GetAliveUnitsByPlayer(false);
+            // Check if each player has remaining units
+            bool player1HasUnits = unitManager.HasRemainingUnits(true);
+            bool player2HasUnits = unitManager.HasRemainingUnits(false);
             
-            SmartLogger.Log($"Checking win/loss conditions - Player 1 units: {player1Units.Count}, Player 2 units: {player2Units.Count}", LogCategory.Game);
+            SmartLogger.Log($"Checking win/loss conditions - Player 1 has units: {player1HasUnits}, Player 2 has units: {player2HasUnits}", LogCategory.Game);
             
             // Check win conditions
-            if (player2Units.Count == 0 && player1Units.Count > 0) {
+            if (!player2HasUnits && player1HasUnits) {
                 // Player 1 wins (all enemy units defeated)
                 HandleGameOver(true);
             } 
-            else if (player1Units.Count == 0 && player2Units.Count > 0) {
+            else if (!player1HasUnits && player2HasUnits) {
                 // Player 2 wins (all player units defeated)
                 HandleGameOver(false);
+            }
+            else if (!player1HasUnits && !player2HasUnits) {
+                // Draw condition - both players have no units left
+                SmartLogger.Log("GAME OVER - DRAW! Both players have no units remaining", LogCategory.Game);
+                HandleGameOver(false); // Default to player 2 win for draw condition
             }
         }
         
@@ -163,8 +178,8 @@ namespace Dokkaebi.Core
             // Trigger event
             OnGameOver?.Invoke(player1Wins);
             
-            // Display win message (simple implementation for now)
-            Debug.Log($"<color=yellow><b>GAME OVER - {winnerText} WINS!</b></color>");
+            // Display win message with color
+            SmartLogger.Log($"<color=yellow><b>GAME OVER - {winnerText} WINS!</b></color>", LogCategory.Game);
         }
         
         /// <summary>
@@ -201,6 +216,65 @@ namespace Dokkaebi.Core
             Time.timeScale = 1;
             
             // Add additional reset logic as needed
+        }
+
+        private void SpawnPlayerUnit(UnitSpawnConfig unitInfo)
+        {
+            var gridPosition = unitInfo.spawnPosition;
+            SmartLogger.Log($"Spawning player: {unitInfo.unitDefinition.displayName} at {gridPosition}", LogCategory.Game, this);
+            UnitManager.Instance.SpawnUnit(unitInfo.unitDefinition, gridPosition, true);
+        }
+
+        private void SpawnEnemyUnit(UnitSpawnConfig unitInfo)
+        {
+            var gridPosition = unitInfo.spawnPosition;
+            SmartLogger.Log($"Spawning enemy: {unitInfo.unitDefinition.displayName} at {gridPosition}", LogCategory.Game, this);
+            UnitManager.Instance.SpawnUnit(unitInfo.unitDefinition, gridPosition, false);
+        }
+
+        private void SpawnUnits()
+        {
+            var spawnData = DataManager.Instance.GetUnitSpawnData();
+            if (spawnData == null)
+            {
+                SmartLogger.LogError("No UnitSpawnData assigned in DataManager!", LogCategory.Game, this);
+                return;
+            }
+
+            // Spawn all configured units
+            foreach (var unitInfo in spawnData.playerUnitSpawns)
+            {
+                SpawnPlayerUnit(unitInfo);
+            }
+
+            foreach (var unitInfo in spawnData.enemyUnitSpawns)
+            {
+                SpawnEnemyUnit(unitInfo);
+            }
+        }
+
+        public void InitializeGame()
+        {
+            SmartLogger.Log("[GameController.InitializeGame] Calling UnitManager.SpawnUnitsFromConfiguration...", LogCategory.Game, this);
+
+            if (UnitManager.Instance == null)
+            {
+                SmartLogger.LogError("[GameController.InitializeGame] Cannot spawn units: UnitManager reference is null!", LogCategory.Game, this);
+                return;
+            }
+
+            SpawnUnits();
+            var units = UnitManager.Instance.GetAliveUnits();
+            SmartLogger.Log($"[GameController.InitializeGame] Found {units.Count} units to register", LogCategory.Game, this);
+
+            foreach (var unit in units)
+            {
+                SmartLogger.Log($"[GameController.InitializeGame] Registering unit {unit.GetUnitName()} (ID: {unit.UnitId})", LogCategory.Game, this);
+                turnSystem.RegisterUnit(unit);
+            }
+
+            // Start the game by transitioning to the first phase
+            turnSystem.NextPhase();
         }
     }
 }

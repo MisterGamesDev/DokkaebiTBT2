@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using UnityEngine;
 using Dokkaebi.Common;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Utilities;
+
 
 namespace Dokkaebi.Grid
 {
@@ -17,8 +19,21 @@ namespace Dokkaebi.Grid
         [SerializeField] private float cellSize = 1f;
         [SerializeField] private Vector3 gridOrigin = Vector3.zero;
         
+        /// <summary>
+        /// The world-space position corresponding to grid position (0, 0).
+        /// </summary>
+        public Vector3 GridOrigin => gridOrigin;
+        
         [Header("Integration")]
         [SerializeField] private bool initializeGridConverter = true;
+        [Header("Debug Visuals")]
+        [SerializeField] private bool showDebugVisuals = true;
+        [SerializeField] private GameObject gridCellPrefab;
+        [SerializeField] private GameObject highlightCellPrefab;
+        [SerializeField] private bool showDebugCubes = true;
+        [SerializeField] private GameObject debugCubePrefab;
+        [SerializeField] private float debugCubeSize = 0.8f;
+        [SerializeField] private Color debugCubeColor = new Color(1f, 0f, 0f, 0.3f);
         
         // Grid data storage
         private Dictionary<GridPosition, GridCell> gridCells = new Dictionary<GridPosition, GridCell>();
@@ -36,13 +51,11 @@ namespace Dokkaebi.Grid
         [SerializeField] private float gridLineWidth = 0.02f;
         [SerializeField] private bool showGridInSceneView = true;
         [SerializeField] private Color sceneViewGridColor = new Color(0.7f, 0.7f, 0.7f, 0.8f);
-        [SerializeField] private bool showDebugVisuals = true;
-        [SerializeField] private GameObject gridCellPrefab;
-        [SerializeField] private GameObject highlightCellPrefab;
-        
+
         // Visualization objects
         private Dictionary<GridPosition, GameObject> visualGridCells = new Dictionary<GridPosition, GameObject>();
         private List<GameObject> highlightCells = new List<GameObject>();
+        private GameObject debugCubeContainer;
 
         // Change pathfinder reference to interface
         private IPathfinder pathfinder;
@@ -53,16 +66,15 @@ public float GetGridCellSize()
 }
         
         private void Awake()
-        {
-            if (instance != null && instance != this)
-            {
-                Debug.LogWarning("More than one GridManager detected. This instance will be destroyed.");
-                Destroy(gameObject);
-                return;
-            }
-            
-            instance = this;
-            DontDestroyOnLoad(gameObject);
+{
+    if (Instance != null && Instance != this)
+    {
+        SmartLogger.LogWarning("More than one GridManager detected. Destroying duplicate.", LogCategory.Grid);
+        Destroy(gameObject);
+        return;
+    }
+    instance = this; // Make sure this line runs!
+    DontDestroyOnLoad(gameObject);
             
             // Initialize shared grid settings
             if (initializeGridConverter)
@@ -113,7 +125,10 @@ public float GetGridCellSize()
                 CreateVisualGrid();
             }
             
-            Debug.Log($"GridManager initialized with grid size {gridWidth}x{gridHeight}");
+            // Create debug cubes
+            CreateDebugCubes();
+            
+            SmartLogger.Log($"GridManager initialized with grid size {gridWidth}x{gridHeight}");
         }
         
         private void CreateVisualGrid()
@@ -151,6 +166,72 @@ public float GetGridCellSize()
         }
         
         /// <summary>
+        /// Creates debug cubes to visualize grid cells
+        /// </summary>
+        private void CreateDebugCubes()
+        {
+            // Clear existing debug cubes first
+            if (debugCubeContainer != null)
+            {
+                Destroy(debugCubeContainer);
+            }
+
+            // Only create if toggled on and prefab is assigned
+            if (!showDebugCubes || debugCubePrefab == null)
+            {
+                return;
+            }
+
+            debugCubeContainer = new GameObject("DebugCubeContainer");
+            debugCubeContainer.transform.SetParent(this.transform, false); // Parent to GridManager
+
+            for (int x = 0; x < gridWidth; x++)
+            {
+                for (int z = 0; z < gridHeight; z++)
+                {
+                    GridPosition gridPos = new GridPosition(x, z);
+
+                    // *** Use the FULL Vector3 returned by GridToWorld ***
+                    // This assumes GridToWorld (likely Common.GridConverter.GridToWorld)
+                    // calculates the correct height or uses a DefaultGridHeight matching your plane.
+                    Vector3 centerWorldPos = GridToWorld(gridPos);
+
+                    // *** Optional: Add a small Y offset IF you want the cubes *slightly* above the plane ***
+                    // centerWorldPos.y += 0.02f; // Uncomment this if needed
+
+                    GameObject cube = Instantiate(debugCubePrefab, centerWorldPos, Quaternion.identity);
+                    cube.name = $"DebugCube_{x}_{z}";
+                    cube.transform.SetParent(debugCubeContainer.transform, false);
+                    cube.transform.localScale = Vector3.one * debugCubeSize * cellSize; // Scale based on cell size
+
+                    Renderer rend = cube.GetComponent<Renderer>();
+                    if (rend != null)
+                    {
+                        // Ensure the material/shader supports transparency for the color alpha to work
+                        rend.material.color = debugCubeColor;
+                    }
+                }
+            }
+            SmartLogger.Log($"Created {gridWidth * gridHeight} debug cubes.");
+        }
+
+        /// <summary>
+        /// Toggle debug cube visualization on/off
+        /// </summary>
+        public void ToggleDebugCubes(bool show)
+        {
+            showDebugCubes = show;
+            if (show)
+            {
+                CreateDebugCubes();
+            }
+            else if (debugCubeContainer != null)
+            {
+                debugCubeContainer.SetActive(false);
+            }
+        }
+        
+        /// <summary>
         /// Validates if a given grid position is within the grid bounds
         /// </summary>
         public bool IsPositionValid(GridPosition position)
@@ -175,7 +256,7 @@ public float GetGridCellSize()
         {
             if (!IsPositionValid(gridPosition))
             {
-                Debug.LogError($"Attempted to place unit at invalid grid position: {gridPosition}");
+                SmartLogger.LogError($"Attempted to place unit at invalid grid position: {gridPosition}", LogCategory.Grid);
                 return;
             }
 
@@ -191,7 +272,7 @@ public float GetGridCellSize()
             // Update grid state
             UpdateGridState(gridPosition, unit);
             
-            Debug.Log($"Placed unit with ID {unit.UnitId} at grid position {gridPosition}");
+            SmartLogger.Log($"Placed unit with ID {unit.UnitId} at grid position {gridPosition}");
         }
 
         private void UpdateGridState(GridPosition position, IDokkaebiUnit unit)
@@ -204,7 +285,7 @@ public float GetGridCellSize()
             }
             else
             {
-                Debug.LogError($"Grid cell not found at position {position}");
+                SmartLogger.LogError($"Grid cell not found at position {position}", LogCategory.Grid);
             }
         }
 
@@ -223,6 +304,45 @@ public float GetGridCellSize()
         {
             return Common.GridConverter.WorldToGrid(worldPos);
         }
+
+        /// <summary>
+        /// Converts a world position to the nearest grid position using rounding.
+        /// Ideal for interpreting player input/targeting.
+        /// </summary>
+        // Inside Scripts/Dokkaebi/Grid/GridManager.cs
+
+// Inside Scripts/Dokkaebi/Grid/GridManager.cs
+
+public GridPosition WorldToNearestGrid(Vector3 worldPos)
+{
+    // Use the cellSize and gridOrigin defined in this GridManager instance
+    float size = this.cellSize;
+    Vector3 origin = this.gridOrigin;
+    // float halfSize = size / 2.0f; // We don't need halfSize for this calculation
+
+    // --- CORRECTED LOGIC ---
+    // 1. Calculate position relative to the grid origin
+    float relativeX = worldPos.x - origin.x;
+    float relativeZ = worldPos.z - origin.z;
+
+    // 2. Convert relative position to grid coordinates using FloorToInt
+    //    This maps the entire world square [N*size, (N+1)*size) correctly to index N
+    //    WITHOUT needing to subtract the halfSize offset here.
+    int x = Mathf.FloorToInt(relativeX / size);
+    int z = Mathf.FloorToInt(relativeZ / size);
+    // --- END CORRECTION ---
+
+    // 3. Clamp to valid grid range
+    int gridWidth = GetGridWidth(); // Use the getter method
+    int gridHeight = GetGridHeight(); // Use the getter method
+    int clampedX = Mathf.Clamp(x, 0, gridWidth - 1);
+    int clampedZ = Mathf.Clamp(z, 0, gridHeight - 1);
+
+    // Optional Debug Log:
+    // Debug.Log($"[W2NG FINAL FIX] World: {worldPos} | Rel: ({relativeX},{relativeZ}) | Calc (Floored): ({x},{z}) | Clamped: ({clampedX},{clampedZ})");
+
+    return new GridPosition(clampedX, clampedZ);
+}
 
         /// <summary>
         /// Gets the grid cell at the specified position
@@ -252,19 +372,54 @@ public float GetGridCellSize()
         }
         
         /// <summary>
+        /// Check if a position is walkable (not blocked), optionally ignoring a specific unit
+        /// </summary>
+        public bool IsWalkable(GridPosition position, IDokkaebiUnit requestingUnit = null)
+{
+    if (!IsPositionValid(position)) {
+        // Debug.Log($"IsWalkable({position}, {requestingUnit?.UnitId}): FALSE (Invalid Position)");
+         return false;
+    }
+    if (!gridCells.TryGetValue(position, out GridCell cell)) {
+        // Debug.Log($"IsWalkable({position}, {requestingUnit?.UnitId}): FALSE (No Cell)");
+        return false; // Cell must exist
+    }
+
+    bool occupiedByOther = cell.IsOccupied && (requestingUnit == null || cell.OccupyingUnit?.UnitId != requestingUnit.UnitId);
+    if (occupiedByOther) {
+         SmartLogger.Log($"IsWalkable({position}, {requestingUnit?.UnitId}): FALSE (Occupied by Other: {cell.OccupyingUnit?.UnitId})");
+         return false;
+    }
+
+    if (!cell.IsWalkable) { // Check walkability flag from the grid cell
+         SmartLogger.Log($"IsWalkable({position}, {requestingUnit?.UnitId}): FALSE (Cell.IsWalkable is False)");
+         return false;
+    }
+    if (IsVoidSpace(position)) { // Check if position is in void space
+         SmartLogger.Log($"IsWalkable({position}, {requestingUnit?.UnitId}): FALSE (Is Void Space)");
+        return false;
+    }
+    // Add other checks with logs as needed...
+
+     SmartLogger.Log($"IsWalkable({position}, {requestingUnit?.UnitId}): TRUE");
+    return true;
+}
+        
+        /// <summary>
         /// Check if a position is walkable (not blocked)
         /// </summary>
         public bool IsWalkable(GridPosition position)
         {
-            if (!IsPositionValid(position)) return false;
-            
-            // Check if the position is blocked by terrain
-            if (pathfinder != null && !pathfinder.IsWalkable(position)) return false;
-            
-            // Check if the position is occupied by a unit
-            if (gridCells.TryGetValue(position, out var cell) && cell.IsOccupied) return false;
-
-            return true;
+            return IsWalkable(position, null);
+        }
+        
+        /// <summary>
+        /// Implementation of IPathfindingGridInfo interface method.
+        /// Checks if a Vector2Int position is walkable.
+        /// </summary>
+        public bool IsWalkable(Vector2Int coordinates)
+        {
+            return IsWalkable(new GridPosition(coordinates.x, coordinates.y), null);
         }
         
         /// <summary>
@@ -356,7 +511,7 @@ public float GetGridCellSize()
         {
             if (!IsPositionValid(gridPos))
             {
-                Debug.LogError($"Attempted to add zone to invalid grid position: {gridPos}");
+                SmartLogger.LogError($"Attempted to add zone to invalid grid position: {gridPos}", LogCategory.Grid);
                 return;
             }
 
@@ -552,7 +707,7 @@ public float GetGridCellSize()
                 line.material = lineMaterial;
             }
             
-            Debug.Log($"Grid visualization created with {gridWidth+1 + gridHeight+1} lines");
+            SmartLogger.Log($"Grid visualization created with {gridWidth+1 + gridHeight+1} lines");
         }
         
         private void OnDrawGizmos()
@@ -641,7 +796,7 @@ public float GetGridCellSize()
         {
             if (!IsPositionValid(gridPos))
             {
-                Debug.LogError($"Attempted to set occupant at invalid grid position: {gridPos}");
+                SmartLogger.LogError($"Attempted to set occupant at invalid grid position: {gridPos}", LogCategory.Grid);
                 return;
             }
 
@@ -672,6 +827,8 @@ public float GetGridCellSize()
                 }
             }
         }
+
+        
         
         /// <summary>
         /// Gets the unit occupying a given grid position
@@ -861,12 +1018,6 @@ public float GetGridCellSize()
         #endregion
 
         // Implementation of IPathfindingGridInfo interface methods
-        public bool IsWalkable(Vector2Int coordinates)
-        {
-            GridPosition gridPos = new GridPosition(coordinates.x, coordinates.y);
-            return IsPositionValid(gridPos) && walkablePositions.TryGetValue(gridPos, out bool isWalkable) ? isWalkable : false;
-        }
-
         public int GetNodeCost(Vector2Int coordinates)
         {
             // For now, just return a basic cost of 1 for all walkable tiles
@@ -877,29 +1028,67 @@ public float GetGridCellSize()
         public IEnumerable<Vector2Int> GetWalkableNeighbours(Vector2Int coordinates)
         {
             List<Vector2Int> neighbours = new List<Vector2Int>();
-            
-            // Check the four cardinal directions
-            Vector2Int[] directions = new Vector2Int[]
+            Interfaces.GridPosition gridPos = new Interfaces.GridPosition(coordinates.x, coordinates.y); // Use the interface GridPosition for IsValidGridPosition check
+
+            // Orthogonal directions (Cost 1)
+            Vector2Int[] orthoDirections = new Vector2Int[]
             {
                 new Vector2Int(0, 1),  // North
                 new Vector2Int(1, 0),  // East
                 new Vector2Int(0, -1), // South
                 new Vector2Int(-1, 0)  // West
             };
-            
-            foreach (var dir in directions)
+
+            foreach (var dir in orthoDirections)
             {
                 Vector2Int neighbourPos = coordinates + dir;
-                if (IsValidGridPosition(neighbourPos) && IsWalkable(neighbourPos))
+                Interfaces.GridPosition neighbourGridPos = new Interfaces.GridPosition(neighbourPos.x, neighbourPos.y);
+                // Use the IGridSystem.IsValidGridPosition and the GridManager's IsWalkable
+                if (IsValidGridPosition(neighbourGridPos) && IsWalkable(neighbourPos)) // Assuming GridManager has IsWalkable(Vector2Int)
                 {
                     neighbours.Add(neighbourPos);
                 }
             }
-            
+
+            // Diagonal directions (Cost 2 - logic handled in BFS)
+            Vector2Int[] diagDirections = new Vector2Int[]
+            {
+                new Vector2Int(1, 1),   // NorthEast
+                new Vector2Int(1, -1),  // SouthEast
+                new Vector2Int(-1, -1), // SouthWest
+                new Vector2Int(-1, 1)   // NorthWest
+            };
+
+            // Check if diagonal connections are allowed by A* graph settings
+            // TODO: Ideally, fetch this from A* settings dynamically if it can change.
+            // For now, assuming 'Eight' connections are set in A* inspector.
+            bool allowDiagonals = true;
+
+            if (allowDiagonals)
+            {
+                foreach (var dir in diagDirections)
+                {
+                    Vector2Int neighbourPos = coordinates + dir;
+                    Interfaces.GridPosition neighbourGridPos = new Interfaces.GridPosition(neighbourPos.x, neighbourPos.y);
+                     // Use the IGridSystem.IsValidGridPosition and the GridManager's IsWalkable
+                    if (IsValidGridPosition(neighbourGridPos) && IsWalkable(neighbourPos))
+                    {
+                        // Optional: Prevent cutting corners if necessary
+                        // This checks if BOTH adjacent orthogonal tiles are unwalkable.
+                        // Vector2Int adjacentOrtho1 = coordinates + new Vector2Int(dir.x, 0);
+                        // Vector2Int adjacentOrtho2 = coordinates + new Vector2Int(0, dir.y);
+                        // if (!IsWalkable(adjacentOrtho1) && !IsWalkable(adjacentOrtho2))
+                        // {
+                        //      continue; // Skip this diagonal neighbor if corner is cut
+                        // }
+
+                        neighbours.Add(neighbourPos);
+                    }
+                }
+            }
+
             return neighbours;
         }
-
-        
     }
     
     /// <summary>
@@ -932,6 +1121,4 @@ public float GetGridCellSize()
         Water,
         Obstacle
     }
-
-    
 } 

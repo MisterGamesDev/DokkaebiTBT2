@@ -7,6 +7,7 @@ using Dokkaebi.Utilities;
 using Dokkaebi.Core.TurnStates;
 using Dokkaebi.Common;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Pathfinding;
 
 namespace Dokkaebi.Core
 {
@@ -28,6 +29,11 @@ namespace Dokkaebi.Core
         // Turn settings
         [Header("Turn Settings")]
         [SerializeField] private float phaseTransitionDelay = 0.3f;
+        
+        [Header("Phase Durations")]
+        [SerializeField] private float openingPhaseDuration = 3.0f;
+        [SerializeField] private float movementPhaseDuration = 15.0f;
+        [SerializeField] private float auraChargingPhaseDuration = 5.0f;
         
         // Events
         public event Action<TurnPhase> OnPhaseChanged;
@@ -51,6 +57,11 @@ namespace Dokkaebi.Core
         [Header("Debug")]
         [SerializeField] private bool debugLogTurns = false;
         
+        // Properties for phase durations
+        public float OpeningPhaseDuration => openingPhaseDuration;
+        public float MovementPhaseDuration => movementPhaseDuration;
+        public float AuraChargingPhaseDuration => auraChargingPhaseDuration;
+        
         // Properties required by ITurnSystem
         public int CurrentTurn => turnStateContext != null ? turnStateContext.GetCurrentTurn() : 1;
         public TurnPhase CurrentPhase => turnStateContext != null ? turnStateContext.GetCurrentPhase() : TurnPhase.Opening;
@@ -72,7 +83,7 @@ namespace Dokkaebi.Core
             DontDestroyOnLoad(gameObject);
 
             // Initialize turn state context
-            turnStateContext = new TurnStateContext();
+            turnStateContext = new TurnStateContext(this);
             turnStateContext.OnPhaseChanged += HandlePhaseChanged;
             turnStateContext.OnTurnChanged += HandleTurnChanged;
             turnStateContext.OnMovementPhaseStart += () => OnMovementPhaseStart?.Invoke();
@@ -99,16 +110,83 @@ namespace Dokkaebi.Core
 
         private void HandlePhaseChanged(TurnPhase newPhase)
         {
+            Debug.Log($"[DokkaebiTurnSystemCore.HandlePhaseChanged] Phase changed to {newPhase} in Turn {turnStateContext.GetCurrentTurn()}");
             OnPhaseChanged?.Invoke(newPhase);
+            
+            // Fire OnActivePlayerChanged event with the new active player
+            int activePlayer = turnStateContext.GetActivePlayer();
+            OnActivePlayerChanged?.Invoke(activePlayer);
             
             if (debugLogTurns)
             {
                 SmartLogger.Log($"Turn phase changed to {newPhase}", LogCategory.TurnSystem);
             }
+            
+            // Reset unit states at the start of MovementPhase
+            if (newPhase == TurnPhase.MovementPhase)
+            {
+                Debug.Log($"[DokkaebiTurnSystemCore.HandlePhaseChanged] ENTERING MovementPhase reset block in Turn {turnStateContext.GetCurrentTurn()}");
+                
+                // Log each unit in the unitsActedThisPhase set
+                Debug.Log($"[DokkaebiTurnSystemCore.HandlePhaseChanged] Units acted this phase before clear: {unitsActedThisPhase.Count}");
+                foreach (var unit in unitsActedThisPhase)
+                {
+                    if (unit != null)
+                    {
+                        Debug.Log($"[DokkaebiTurnSystemCore.HandlePhaseChanged] - Unit in unitsActedThisPhase: {unit.GetUnitName()} (ID: {unit.UnitId})");
+                    }
+                }
+                
+                // Clear the collections
+                unitsActedThisPhase.Clear();
+                pendingMoves.Clear();
+                isExecutingMoves = false;
+                totalMovesMade = 0;
+                
+                Debug.Log($"[DokkaebiTurnSystemCore.HandlePhaseChanged] Cleared unitsActedThisPhase. New count: {unitsActedThisPhase.Count}");
+                
+                // Get units directly from UnitManager instead of using registeredUnits
+                var allActiveUnits = UnitManager.Instance?.GetAliveUnits();
+                if (allActiveUnits != null)
+                {
+                    Debug.Log($"[DokkaebiTurnSystemCore.HandlePhaseChanged] Resetting state for {allActiveUnits.Count} units from UnitManager.");
+                    foreach (var unit in allActiveUnits)
+                    {
+                        if (unit != null)
+                        {
+                            Debug.Log($"[DokkaebiTurnSystemCore.HandlePhaseChanged] Resetting movement state for unit: {unit.GetUnitName()} (ID: {unit.UnitId}) via UnitManager list. Current hasMovedThisTurn: {unit.HasMovedThisTurn}");
+                            unit.ResetActionState(); // Call the existing unit method to reset flags
+                            Debug.Log($"[DokkaebiTurnSystemCore.HandlePhaseChanged] After reset, unit's hasMovedThisTurn: {unit.HasMovedThisTurn}");
+                            
+                            // Grant +1 Aura to each unit at the start of Movement Phase, but only from Turn 2 onwards
+                            if (turnStateContext.GetCurrentTurn() >= 2)
+                            {
+                                unit.ModifyUnitAura(1);
+                                Debug.Log($"[DokkaebiTurnSystemCore.HandlePhaseChanged] Granted +1 Aura to unit: {unit.GetUnitName()} (ID: {unit.UnitId}) in Turn {turnStateContext.GetCurrentTurn()}");
+                            }
+                            else
+                            {
+                                Debug.Log($"[DokkaebiTurnSystemCore.HandlePhaseChanged] Skipped aura grant for unit: {unit.GetUnitName()} (ID: {unit.UnitId}) in Turn {turnStateContext.GetCurrentTurn()} (only granted from Turn 2 onwards)");
+                            }
+                        }
+                        else
+                        {
+                            Debug.LogWarning("[DokkaebiTurnSystemCore.HandlePhaseChanged] Found a null unit in UnitManager's list.");
+                        }
+                    }
+                }
+                else
+                {
+                    Debug.LogError("[DokkaebiTurnSystemCore.HandlePhaseChanged] Could not get units from UnitManager.Instance or it returned null.");
+                }
+                
+                OnMovementPhaseStart?.Invoke();
+            }
         }
 
         private void HandleTurnChanged(int newTurn)
         {
+            Debug.Log($"[DokkaebiTurnSystemCore.HandleTurnChanged] Turn changed to {newTurn}");
             OnTurnChanged?.Invoke(newTurn);
             OnActivePlayerChanged?.Invoke(turnStateContext.GetActivePlayer());
             
@@ -116,6 +194,66 @@ namespace Dokkaebi.Core
             {
                 SmartLogger.Log($"Turn changed to {newTurn}", LogCategory.TurnSystem);
             }
+
+            // Gain aura for both players at the start of each turn
+            if (AuraManager.Instance != null)
+            {
+                SmartLogger.Log($"Triggering Aura gain for Turn {newTurn}", LogCategory.TurnSystem);
+                
+                // Get current aura values before gain
+                int player1Before = AuraManager.Instance.GetCurrentAura(true);
+                int player2Before = AuraManager.Instance.GetCurrentAura(false);
+                
+                // Trigger aura gain for both players
+                AuraManager.Instance.GainAuraForTurn(true);  // Player 1 gains aura
+                AuraManager.Instance.GainAuraForTurn(false); // Player 2 gains aura
+                
+                // Log the changes
+                SmartLogger.Log($"Player 1 Aura: {player1Before} -> {AuraManager.Instance.GetCurrentAura(true)}", LogCategory.TurnSystem);
+                SmartLogger.Log($"Player 2 Aura: {player2Before} -> {AuraManager.Instance.GetCurrentAura(false)}", LogCategory.TurnSystem);
+            }
+            else
+            {
+                SmartLogger.LogError("AuraManager.Instance is null. Cannot trigger Aura gain.", LogCategory.TurnSystem);
+            }
+            
+            // Reset unit state for new turn
+            Debug.Log("[DokkaebiTurnSystemCore.HandleTurnChanged] Resetting unit state for new turn");
+            Debug.Log($"[DokkaebiTurnSystemCore.HandleTurnChanged] Current units in unitsActedThisPhase: {unitsActedThisPhase.Count}");
+            
+            // Log each unit in the unitsActedThisPhase set
+            foreach (var unit in unitsActedThisPhase)
+            {
+                if (unit != null)
+                {
+                    Debug.Log($"[DokkaebiTurnSystemCore.HandleTurnChanged] - Unit in unitsActedThisPhase: {unit.GetUnitName()} (ID: {unit.UnitId})");
+                }
+                else
+                {
+                    Debug.Log("[DokkaebiTurnSystemCore.HandleTurnChanged] - Found null unit in unitsActedThisPhase");
+                }
+            }
+            
+            // Log each unit in the pendingMoves dictionary
+            Debug.Log($"[DokkaebiTurnSystemCore.HandleTurnChanged] Current units in pendingMoves: {pendingMoves.Count}");
+            foreach (var kvp in pendingMoves)
+            {
+                if (kvp.Key != null)
+                {
+                    Debug.Log($"[DokkaebiTurnSystemCore.HandleTurnChanged] - Unit in pendingMoves: {kvp.Key.GetUnitName()} (ID: {kvp.Key.UnitId}) targeting {kvp.Value}");
+                }
+                else
+                {
+                    Debug.Log("[DokkaebiTurnSystemCore.HandleTurnChanged] - Found null unit in pendingMoves");
+                }
+            }
+            
+            // Log each registered unit
+            Debug.Log("[DokkaebiTurnSystemCore] Resetting unit state for new turn");
+            unitsActedThisPhase.Clear();
+            pendingMoves.Clear();
+            isExecutingMoves = false;
+            totalMovesMade = 0;
         }
 
         public void CustomUpdate(float deltaTime)
@@ -130,9 +268,26 @@ namespace Dokkaebi.Core
         private bool CanUnitMove(DokkaebiUnit unit)
         {
             if (turnStateContext == null || !turnStateContext.AllowsMovement())
+            {
+                Debug.Log($"[DokkaebiTurnSystemCore.CanUnitMove] Movement not allowed for {unit.GetUnitName()} (ID: {unit.UnitId}). turnStateContext null: {turnStateContext == null}, AllowsMovement: {turnStateContext?.AllowsMovement()}");
                 return false;
-
-            return !unitsActedThisPhase.Contains(unit);
+            }
+            
+            if (isExecutingMoves)
+            {
+                Debug.Log($"[DokkaebiTurnSystemCore.CanUnitMove] Movement not allowed for {unit.GetUnitName()} (ID: {unit.UnitId}). isExecutingMoves: {isExecutingMoves}");
+                return false;
+            }
+            
+            if (HasUnitActedThisPhase(unit))
+            {
+                Debug.Log($"[DokkaebiTurnSystemCore.CanUnitMove] Movement not allowed for {unit.GetUnitName()} (ID: {unit.UnitId}). Unit has already acted this phase");
+                return false;
+            }
+            
+            bool canMove = unit.CanMove();
+            Debug.Log($"[DokkaebiTurnSystemCore.CanUnitMove] Final check for {unit.GetUnitName()} (ID: {unit.UnitId}). CanMove: {canMove}");
+            return canMove;
         }
 
         private bool CanUnitUseAura(DokkaebiUnit unit)
@@ -186,7 +341,9 @@ namespace Dokkaebi.Core
         {
             if (unit != null && !registeredUnits.Contains(unit))
             {
+                Debug.Log($"[DokkaebiTurnSystemCore.RegisterUnit] Registering unit {unit.GetUnitName()} (ID: {unit.UnitId})");
                 registeredUnits.Add(unit);
+                Debug.Log($"[DokkaebiTurnSystemCore.RegisterUnit] After registration, registeredUnits count: {registeredUnits.Count}");
                 SmartLogger.Log($"Unit {unit.GetUnitName()} registered with turn system", LogCategory.TurnSystem);
             }
         }
@@ -198,7 +355,9 @@ namespace Dokkaebi.Core
         {
             if (unit != null && registeredUnits.Contains(unit))
             {
+                Debug.Log($"[DokkaebiTurnSystemCore.UnregisterUnit] Unregistering unit {unit.GetUnitName()} (ID: {unit.UnitId}). Current count: {registeredUnits.Count}");
                 registeredUnits.Remove(unit);
+                Debug.Log($"[DokkaebiTurnSystemCore.UnregisterUnit] After unregistration, registeredUnits count: {registeredUnits.Count}");
                 
                 // Also remove from pending actions if present
                 if (pendingMoves.ContainsKey(unit))
@@ -399,46 +558,91 @@ namespace Dokkaebi.Core
         }
         
         /// <summary>
-        /// Execute all pending move actions
+        /// Executes all pending moves by initiating pathfinding for each unit
         /// </summary>
-        private void ExecuteAllPendingMoves()
+        public void ExecuteAllPendingMoves()
         {
-            using (new PerformanceScope("ExecuteAllPendingMoves"))
+            if (isExecutingMoves)
             {
-                if (pendingMoves.Count == 0)
-                {
-                    SmartLogger.Log("No pending moves to execute", LogCategory.Movement);
-                    return;
-                }
-                
-                if (isExecutingMoves)
-                {
-                    SmartLogger.Log("Already executing moves", LogCategory.Movement);
-                    return;
-                }
-                    
-                isExecutingMoves = true;
-                
-                // Get a copy of all pending moves to avoid collection modification issues
-                var movesToExecute = new Dictionary<DokkaebiUnit, GridPosition>(pendingMoves);
-                pendingMoves.Clear();
-                
-                // Log the moves being executed
-                foreach (var kvp in movesToExecute)
-                {
-                    DokkaebiUnit unit = kvp.Key;
-                    GridPosition targetPosition = kvp.Value;
-                    
-                    if (unit == null) continue;
-                    
-                    // Get current position for logging
-                    GridPosition currentPos = unit.GetGridPosition();
-                    SmartLogger.Log($"Processing move for {unit.GetUnitName()} from {currentPos} to {targetPosition}", LogCategory.Movement);
-                }
-                
-                // Mark execution as complete
-                isExecutingMoves = false;
+                SmartLogger.Log("[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Already executing moves, skipping", LogCategory.Movement);
+                return;
             }
+
+            isExecutingMoves = true;
+            SmartLogger.Log("[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Starting execution of pending moves", LogCategory.Movement);
+
+            // Get units from UnitManager
+            if (UnitManager.Instance == null)
+            {
+                SmartLogger.LogError("[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] UnitManager.Instance is null!", LogCategory.Movement);
+                isExecutingMoves = false;
+                return;
+            }
+
+            // Initialize set to track reserved target tiles
+            HashSet<GridPosition> reservedTargetTiles = new HashSet<GridPosition>();
+            SmartLogger.Log("[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Initialized reserved target tile set", LogCategory.Movement);
+
+            var unitsToProcess = UnitManager.Instance.GetAliveUnits();
+            SmartLogger.Log($"[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Found {unitsToProcess.Count} alive units from UnitManager.", LogCategory.Movement);
+
+            // Process all alive units
+            foreach (var unit in unitsToProcess)
+            {
+                if (unit == null) continue;
+
+                SmartLogger.Log($"[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Checking unit {unit.GetUnitName()} (ID: {unit.UnitId}). HasPendingMovementFlag: {unit.HasPendingMovementFlag}, HasPendingMovement(): {unit.HasPendingMovement()}", LogCategory.Movement);
+
+                if (unit.HasPendingMovement())
+                {
+                    var targetPosition = unit.GetPendingTargetPosition();
+                    GridPosition currentPos = unit.GetCurrentGridPosition();
+                    
+                    // Only process the move if the target is different from current position
+                    if (targetPosition != currentPos)
+                    {
+                        SmartLogger.Log($"[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Unit {unit.GetUnitName()} has pending move to {targetPosition}", LogCategory.Movement);
+
+                        // Check if target tile is already reserved
+                        if (reservedTargetTiles.Contains(targetPosition))
+                        {
+                            SmartLogger.LogWarning($"[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Conflict: Tile {targetPosition} already reserved. Cancelling move for {unit.GetUnitName()}", LogCategory.Movement);
+                            unit.ClearPendingMovement();
+                            continue;
+                        }
+
+                        // Reserve the tile for this unit
+                        reservedTargetTiles.Add(targetPosition);
+                        SmartLogger.Log($"[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Tile {targetPosition} reserved for {unit.GetUnitName()}", LogCategory.Movement);
+                        
+                        // Get the movement handler and initiate movement
+                        DokkaebiMovementHandler handler = unit.GetComponent<DokkaebiMovementHandler>();
+                        if (handler != null)
+                        {
+                            SmartLogger.Log($"[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Initiating movement for {unit.GetUnitName()} to target {targetPosition}", LogCategory.Movement);
+                            handler.RequestPath(targetPosition);
+                            
+                            // Clear pending state AFTER initiating movement
+                            unit.ClearPendingMovement();
+                        }
+                        else
+                        {
+                            SmartLogger.LogError($"[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Unit {unit.GetUnitName()} has no DokkaebiMovementHandler component!", LogCategory.Movement);
+                            // Remove reservation since movement failed
+                            reservedTargetTiles.Remove(targetPosition);
+                        }
+                    }
+                    else
+                    {
+                        SmartLogger.LogWarning($"[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Unit {unit.GetUnitName()} has pending movement but target position is same as current position", LogCategory.Movement);
+                        unit.ClearPendingMovement();
+                    }
+                }
+            }
+
+            // Mark execution as complete
+            isExecutingMoves = false;
+            SmartLogger.Log("[DokkaebiTurnSystemCore.ExecuteAllPendingMoves] Completed execution of pending moves", LogCategory.Movement);
         }
         
         /// <summary>
@@ -485,9 +689,19 @@ namespace Dokkaebi.Core
         
         public void EndMovementPhase()
         {
-            if (turnStateContext != null && turnStateContext.GetCurrentPhase() == Common.TurnPhase.MovementPhase)
+            SmartLogger.Log($"[DokkaebiTurnSystemCore.EndMovementPhase] Called. Current phase: {GetCurrentPhase()}, IsTransitionLocked: {turnStateContext?.IsTransitionLocked ?? false}", LogCategory.TurnSystem);
+            
+            if (turnStateContext != null && GetCurrentPhase() == TurnPhase.MovementPhase)
             {
-                NextPhase();
+                SmartLogger.Log("[DokkaebiTurnSystemCore.EndMovementPhase] Attempting to transition to next state", LogCategory.TurnSystem);
+                turnStateContext.TransitionToNextState();
+                
+                // Log the result
+                SmartLogger.Log($"[DokkaebiTurnSystemCore.EndMovementPhase] After transition attempt. New phase: {GetCurrentPhase()}", LogCategory.TurnSystem);
+            }
+            else
+            {
+                SmartLogger.LogWarning($"[DokkaebiTurnSystemCore.EndMovementPhase] Cannot end movement phase. TurnStateContext null: {turnStateContext == null}, Current phase: {GetCurrentPhase()}", LogCategory.TurnSystem);
             }
         }
 
@@ -548,6 +762,11 @@ namespace Dokkaebi.Core
             {
                 SmartLogger.Log($"Turn system state set: Turn {turnNumber}, Phase {phase}, Active Player {activePlayer}", LogCategory.TurnSystem);
             }
+        }
+
+        public float GetRemainingPhaseTime()
+        {
+            return turnStateContext != null ? turnStateContext.GetRemainingTime() : 0f;
         }
     }
 }

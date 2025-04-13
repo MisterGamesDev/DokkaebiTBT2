@@ -5,8 +5,13 @@ using Dokkaebi.Grid;
 using Dokkaebi.Units;
 using Dokkaebi.Zones;
 using Dokkaebi.Common;
+using Dokkaebi.Interfaces;
 using System.Linq;
 using Dokkaebi.Utilities;
+using Dokkaebi.Core.Data;
+using Dokkaebi.Core;
+// using Dokkaebi.VFX; // Temporarily removed until VFXManager is implemented
+// using Dokkaebi.Audio; // Temporarily removed until AudioManager is implemented
 
 namespace Dokkaebi.Core.Networking
 {
@@ -24,6 +29,8 @@ namespace Dokkaebi.Core.Networking
         [SerializeField] private UnitManager unitManager;
         [SerializeField] private GridManager gridManager;
         [SerializeField] private ZoneManager zoneManager;
+        // [SerializeField] private VFXManager vfxManager; // Temporarily commented out until VFXManager is implemented
+        // [SerializeField] private AudioManager audioManager; // Temporarily commented out until AudioManager is implemented
 
         // The most recent game state from the server
         private GameStateData currentGameState;
@@ -50,12 +57,19 @@ namespace Dokkaebi.Core.Networking
             if (unitManager == null) unitManager = FindObjectOfType<UnitManager>();
             if (gridManager == null) gridManager = FindObjectOfType<GridManager>();
             if (zoneManager == null) zoneManager = FindObjectOfType<ZoneManager>();
+            // if (vfxManager == null) vfxManager = FindObjectOfType<VFXManager>(); // Temporarily commented out until VFXManager is implemented
+            // if (audioManager == null) audioManager = FindObjectOfType<AudioManager>(); // Temporarily commented out until AudioManager is implemented
 
             if (networkManager == null || turnSystem == null || unitManager == null || gridManager == null || zoneManager == null)
             {
                 Debug.LogError("Required managers not found in scene!");
                 return;
             }
+
+            // if (vfxManager == null || audioManager == null)
+            // {
+            //     Debug.LogWarning("VFX or Audio manager not found. Visual/Audio effects will not play.");
+            // }
         }
 
         private void Start()
@@ -140,8 +154,6 @@ namespace Dokkaebi.Core.Networking
         {
             if (unitManager == null || gameState.Units == null) return;
             
-            // TEMPORARY - Commented out code that uses missing methods/properties
-            /*
             // Create lookup for unit state by ID for faster access
             Dictionary<string, UnitStateData> unitStates = new Dictionary<string, UnitStateData>();
             foreach (var unitState in gameState.Units)
@@ -150,88 +162,134 @@ namespace Dokkaebi.Core.Networking
             }
             
             // Get all active units
-            var activeUnits = unitManager.GetAllUnits();
+            var activeUnits = unitManager.GetUnitsByPlayer(true).Concat(unitManager.GetUnitsByPlayer(false));
             
             // Update existing units
             foreach (var unit in activeUnits)
             {
-                if (unitStates.TryGetValue(unit.UnitId, out UnitStateData unitState))
+                if (unitStates.TryGetValue(unit.GetUnitId().ToString(), out UnitStateData unitState))
                 {
                     // Update unit state
                     UpdateUnitState(unit, unitState);
                     
                     // Remove from dictionary to track which ones we've handled
-                    unitStates.Remove(unit.UnitId);
+                    unitStates.Remove(unit.GetUnitId().ToString());
                 }
                 else
                 {
                     // Unit exists locally but not in server state - should be removed
-                    // This would be implemented in a production version, but for prototype
-                    // we'll just log a warning
-                    Debug.LogWarning($"Unit {unit.UnitId} exists locally but not in server state");
+                    SmartLogger.LogWarning($"Unit {unit.GetUnitId()} exists locally but not in server state", LogCategory.Unit);
                 }
             }
-            
-            // Handle units that exist in server state but not locally
-            // For the prototype, we'll just log this
-            foreach (var unitState in unitStates.Values)
-            {
-                Debug.LogWarning($"Unit {unitState.UnitId} exists in server state but not locally");
-                // In a full implementation, we would instantiate these units
-            }
-            */
-            
-            // Temporary stub for compilation
-            Debug.Log($"Would update {gameState.Units.Count} units based on server state");
         }
 
         /// <summary>
-        /// Update a single unit's state based on server data
+        /// Update a unit's state based on server data
         /// </summary>
         private void UpdateUnitState(DokkaebiUnit unit, UnitStateData unitState)
         {
-            // TEMPORARY - Commented out code that uses missing properties/methods
+            if (unit == null || unitState == null) return;
+
+            // Store old values for comparison
+            float oldHP = unit.CurrentHealth;
+            var oldPosition = unit.CurrentGridPosition;
+            // Get a copy of existing status effects to compare against later
+            List<IStatusEffectInstance> oldStatusEffects = unit.GetStatusEffects()?.ToList() ?? new List<IStatusEffectInstance>();
+
+            // Update basic properties
+            unit.SetGridPosition(Interfaces.GridPosition.FromVector2Int(unitState.Position));
+            unit.SetCurrentHealth(unitState.CurrentHP);
+            unit.SetMaxHealth(unitState.MaxHP);
+            unit.SetCurrentAura(Mathf.RoundToInt(unitState.CurrentMP));
+            unit.SetMaxAura(Mathf.RoundToInt(unitState.MaxMP));
+            unit.SetIsPlayerUnit(unitState.IsPlayerUnit);
+
+            // Play effects based on state changes
+            // Temporarily commented out until VFXManager and AudioManager are implemented
             /*
-            // Update position if different
-            if (unit.GridPosition != unitState.Position)
+            if (vfxManager != null && audioManager != null)
             {
-                unit.SetPosition(unitState.Position);
-            }
-            
-            // Update HP if different
-            if (unit.CurrentHP != unitState.CurrentHP)
-            {
-                unit.SetHP(unitState.CurrentHP);
-            }
-            
-            // Update MP if different
-            if (Mathf.Abs(unit.CurrentMP - unitState.CurrentMP) > 0.01f)
-            {
-                unit.SetMP(unitState.CurrentMP);
-            }
-            
-            // Update action states
-            unit.SetActionState(unitState.HasMoved, unitState.HasUsedAbility);
-            
-            // Update abilities and cooldowns
-            if (unitState.Abilities != null)
-            {
-                for (int i = 0; i < unitState.Abilities.Count && i < unit.Abilities.Count; i++)
+                Vector3 unitPosition = unit.transform.position;
+
+                // Health changes
+                if (unitState.CurrentHP < oldHP)
                 {
-                    var ability = unit.Abilities[i];
-                    var abilityState = unitState.Abilities[i];
-                    
-                    // Update cooldown
-                    ability.SetCooldown(abilityState.CurrentCooldown);
+                    // Damage taken
+                    vfxManager.PlayDamageEffect(unitPosition);
+                    vfxManager.ShowFloatingNumber(unitPosition, $"-{Mathf.RoundToInt(oldHP - unitState.CurrentHP)}", Color.red);
+                    audioManager.PlayDamageSound();
+                }
+                else if (unitState.CurrentHP > oldHP)
+                {
+                    // Healing received
+                    vfxManager.PlayHealEffect(unitPosition);
+                    vfxManager.ShowFloatingNumber(unitPosition, $"+{Mathf.RoundToInt(unitState.CurrentHP - oldHP)}", Color.green);
+                    audioManager.PlayHealSound();
+                }
+
+                // Status Effect changes - Compare new state list with old list
+                List<IStatusEffectInstance> newStatusEffects = unitState.StatusEffects ?? new List<IStatusEffectInstance>();
+
+                // Added Effects: Effects in new list that weren't in old list
+                var addedEffects = newStatusEffects.Where(newEffect =>
+                    newEffect != null && !oldStatusEffects.Any(oldEffect => 
+                        oldEffect != null && oldEffect.StatusEffectType == newEffect.StatusEffectType)
+                ).ToList();
+
+                foreach (var addedEffect in addedEffects)
+                {
+                    vfxManager.PlayStatusEffectAddedEffect(unitPosition, addedEffect.StatusEffectType);
+                    audioManager.PlayStatusEffectAddedSound(addedEffect.StatusEffectType);
+                }
+
+                // Removed Effects: Effects in old list that are not in new list
+                var removedEffects = oldStatusEffects.Where(oldEffect =>
+                    oldEffect != null && !newStatusEffects.Any(newEffect => 
+                        newEffect != null && newEffect.StatusEffectType == oldEffect.StatusEffectType)
+                ).ToList();
+
+                foreach (var removedEffect in removedEffects)
+                {
+                    vfxManager.PlayStatusEffectRemovedEffect(unitPosition, removedEffect.StatusEffectType);
+                    audioManager.PlayStatusEffectRemovedSound(removedEffect.StatusEffectType);
                 }
             }
             */
-            
-            // Temporary stub for compilation
-            Debug.Log($"Would update unit {unit.name} with state data");
-            
-            // Update status effects
-            // In a full implementation, we would update status effects here
+
+            // Update unit state
+            if (unit != null)
+            {
+                // Update position
+                var gridPos = Interfaces.GridPosition.FromVector2Int(unitState.Position);
+                if (gridPos.x != unit.GetGridPosition().x || gridPos.z != unit.GetGridPosition().z)
+                {
+                    unit.SetGridPosition(gridPos);
+                }
+
+                // Update health
+                if (unitState.CurrentHP != unit.GetCurrentHealth())
+                {
+                    unit.SetCurrentHealth(unitState.CurrentHP);
+                }
+
+                // Update aura
+                if (unitState.CurrentMP != unit.GetCurrentAura())
+                {
+                    unit.SetCurrentAura(Mathf.RoundToInt(unitState.CurrentMP));
+                }
+
+                // Update unit-specific aura
+                if ((unitState.HasMoved ? 1 : 0) != unit.GetCurrentUnitAura())
+                {
+                    unit.SetCurrentUnitAura(unitState.HasMoved ? 1 : 0);
+                }
+
+                // Update movement state
+                if (unitState.HasMoved != unit.HasPendingMovement())
+                {
+                    unit.SetPendingMovement(unitState.HasMoved);
+                }
+            }
         }
 
         /// <summary>
@@ -256,38 +314,8 @@ namespace Dokkaebi.Core.Networking
             {
                 if (zoneStates.TryGetValue(zone.ZoneId, out ZoneStateData zoneState))
                 {
-                    // Convert Vector2Int position to GridPosition
-                    var gridPos = Dokkaebi.Interfaces.GridPosition.FromVector2Int(zone.Position);
-                    
-                    // Get all ZoneInstances at this position
-                    var zonesAtPosition = zoneManager.GetZonesAtPosition(gridPos);
-                    
-                    // Find the matching ZoneInstance
-                    var targetInstance = zonesAtPosition.FirstOrDefault(instance => 
-                        instance != null && 
-                        instance.Id.ToString() == zone.ZoneId && 
-                        instance.IsActive);
-                    
-                    if (targetInstance != null)
-                    {
-                        // Re-initialize the instance with updated data
-                        targetInstance.Initialize(
-                            DataManager.Instance.GetZoneData(zoneState.ZoneType),
-                            gridPos,
-                            int.TryParse(zoneState.OwnerUnitId, out int ownerId) ? ownerId : -1,
-                            zoneState.RemainingDuration
-                        );
-                        
-                        SmartLogger.Log($"Updated ZoneInstance {targetInstance.Id} duration to {zoneState.RemainingDuration}", LogCategory.Zone);
-                    }
-                    else
-                    {
-                        SmartLogger.LogWarning($"Could not find matching ZoneInstance for Zone ID {zone.ZoneId} at position {gridPos}", LogCategory.Zone);
-                    }
-                    
-                    // Update the simple Zone object as well
-                    zone.SetDuration(zoneState.RemainingDuration);
-                    zone.SetPosition(zoneState.Position);
+                    // Update zone state
+                    UpdateZoneState(zone, zoneState);
                     
                     // Remove from dictionary to track which ones we've handled
                     zoneStates.Remove(zone.ZoneId);
@@ -328,6 +356,43 @@ namespace Dokkaebi.Core.Networking
                 {
                     SmartLogger.LogError($"Failed to create Zone for state data {zoneState.ZoneId}", LogCategory.Zone);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Update a zone's state based on server data
+        /// </summary>
+        private void UpdateZoneState(Zone zone, ZoneStateData zoneState)
+        {
+            if (zone == null || zoneState == null) return;
+
+            // Update zone properties
+            zone.SetDuration(zoneState.RemainingDuration);
+            zone.SetPosition(zoneState.Position);
+            
+            // Update zone instance if it exists
+            var gridPos = Interfaces.GridPosition.FromVector2Int(zone.Position);
+            var zonesAtPosition = zoneManager.GetZonesAtPosition(gridPos);
+            var targetInstance = zonesAtPosition.FirstOrDefault(instance => 
+                instance != null && 
+                instance.Id.ToString() == zone.ZoneId && 
+                instance.IsActive);
+                
+            if (targetInstance != null)
+            {
+                // Re-initialize the instance with updated data
+                targetInstance.Initialize(
+                    DataManager.Instance.GetZoneData(zoneState.ZoneType),
+                    gridPos,
+                    int.TryParse(zoneState.OwnerUnitId, out int ownerId) ? ownerId : -1,
+                    zoneState.RemainingDuration
+                );
+                
+                SmartLogger.Log($"Updated ZoneInstance {targetInstance.Id} duration to {zoneState.RemainingDuration}", LogCategory.Zone);
+            }
+            else
+            {
+                SmartLogger.LogWarning($"Could not find matching ZoneInstance for Zone ID {zone.ZoneId} at position {gridPos}", LogCategory.Zone);
             }
         }
 

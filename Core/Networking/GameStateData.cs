@@ -4,6 +4,9 @@ using UnityEngine;
 using Dokkaebi.Units;
 using Dokkaebi.Grid;
 using Dokkaebi.Common;
+using Dokkaebi.Core.Data;
+using Dokkaebi.Interfaces;
+using Dokkaebi.Utilities;
 
 namespace Dokkaebi.Core.Networking
 {
@@ -212,7 +215,12 @@ namespace Dokkaebi.Core.Networking
         public bool HasMoved;
         public bool HasUsedAbility;
         public List<AbilityStateData> Abilities;
-        public List<StatusEffectData> StatusEffects;
+        public List<IStatusEffectInstance> StatusEffects;
+        
+        // Planned ability data
+        public bool HasPlannedAbility;
+        public int PlannedAbilityIndex;
+        public Vector2Int PlannedAbilityTarget;
         
         /// <summary>
         /// Parse unit state from dictionary
@@ -271,6 +279,20 @@ namespace Dokkaebi.Core.Networking
             if (dict.TryGetValue("hasUsedAbility", out object hasUsedObj))
                 unitData.HasUsedAbility = Convert.ToBoolean(hasUsedObj);
                 
+            // Parse planned ability data
+            if (dict.TryGetValue("hasPlannedAbility", out object hasPlannedObj))
+                unitData.HasPlannedAbility = Convert.ToBoolean(hasPlannedObj);
+                
+            if (dict.TryGetValue("plannedAbilityIndex", out object plannedIndexObj) && plannedIndexObj is long plannedIndexLong)
+                unitData.PlannedAbilityIndex = (int)plannedIndexLong;
+                
+            // Parse planned ability target position
+            if (dict.TryGetValue("plannedTargetX", out object targetXObj) && targetXObj is long targetXLong)
+                unitData.PlannedAbilityTarget.x = (int)targetXLong;
+                
+            if (dict.TryGetValue("plannedTargetY", out object targetYObj) && targetYObj is long targetYLong)
+                unitData.PlannedAbilityTarget.y = (int)targetYLong;
+                
             // Parse abilities
             unitData.Abilities = new List<AbilityStateData>();
             if (dict.TryGetValue("abilities", out object abilitiesObj) && abilitiesObj is List<object> abilitiesList)
@@ -286,15 +308,28 @@ namespace Dokkaebi.Core.Networking
             }
             
             // Parse status effects
-            unitData.StatusEffects = new List<StatusEffectData>();
+            unitData.StatusEffects = new List<IStatusEffectInstance>();
             if (dict.TryGetValue("statusEffects", out object effectsObj) && effectsObj is List<object> effectsList)
             {
                 foreach (var effectObj in effectsList)
                 {
                     if (effectObj is Dictionary<string, object> effectDict)
                     {
-                        var effectData = StatusEffectData.FromDictionary(effectDict);
-                        unitData.StatusEffects.Add(effectData);
+                        string effectId = effectDict.TryGetValue("effectId", out object idObj) ? idObj as string : null;
+                        int remainingDuration = effectDict.TryGetValue("remainingDuration", out object durationObj) && durationObj is long durationLong ? (int)durationLong : 0;
+                        int sourceUnitId = effectDict.TryGetValue("sourceUnitId", out object sourceObj) && sourceObj is long sourceLong ? (int)sourceLong : -1;
+
+                        // Get effect data from DataManager using effectId
+                        var effectData = DataManager.Instance.GetStatusEffectData(effectId);
+                        if (effectData != null)
+                        {
+                            var effectInstance = new StatusEffectInstance(effectData, remainingDuration, sourceUnitId);
+                            unitData.StatusEffects.Add(effectInstance);
+                        }
+                        else
+                        {
+                            SmartLogger.LogWarning($"Status effect data not found for ID: {effectId}", LogCategory.StateSync);
+                        }
                     }
                 }
             }
@@ -320,7 +355,11 @@ namespace Dokkaebi.Core.Networking
                 { "currentMP", CurrentMP },
                 { "maxMP", MaxMP },
                 { "hasMoved", HasMoved },
-                { "hasUsedAbility", HasUsedAbility }
+                { "hasUsedAbility", HasUsedAbility },
+                { "hasPlannedAbility", HasPlannedAbility },
+                { "plannedAbilityIndex", PlannedAbilityIndex },
+                { "plannedTargetX", PlannedAbilityTarget.x },
+                { "plannedTargetY", PlannedAbilityTarget.y }
             };
             
             // Add abilities
@@ -340,7 +379,13 @@ namespace Dokkaebi.Core.Networking
             {
                 foreach (var effect in StatusEffects)
                 {
-                    effectsList.Add(effect.ToDictionary());
+                    effectsList.Add(new Dictionary<string, object>
+                    {
+                        { "effectId", effect.Effect.effectId },
+                        { "effectType", effect.Effect.effectType.ToString() },
+                        { "remainingDuration", effect.RemainingDuration },
+                        { "sourceUnitId", effect.SourceUnitId }
+                    });
                 }
             }
             dict["statusEffects"] = effectsList;
@@ -394,54 +439,6 @@ namespace Dokkaebi.Core.Networking
                 { "abilityName", AbilityName },
                 { "currentCooldown", CurrentCooldown },
                 { "maxCooldown", MaxCooldown }
-            };
-        }
-    }
-    
-    /// <summary>
-    /// Represents a status effect's data
-    /// </summary>
-    [Serializable]
-    public class StatusEffectData
-    {
-        public string EffectId;
-        public string EffectType;
-        public int RemainingDuration;
-        public int Value;
-        
-        /// <summary>
-        /// Parse status effect from dictionary
-        /// </summary>
-        public static StatusEffectData FromDictionary(Dictionary<string, object> dict)
-        {
-            var effectData = new StatusEffectData();
-            
-            if (dict.TryGetValue("effectId", out object idObj))
-                effectData.EffectId = idObj as string;
-                
-            if (dict.TryGetValue("effectType", out object typeObj))
-                effectData.EffectType = typeObj as string;
-                
-            if (dict.TryGetValue("remainingDuration", out object durationObj) && durationObj is long durationLong)
-                effectData.RemainingDuration = (int)durationLong;
-                
-            if (dict.TryGetValue("value", out object valueObj) && valueObj is long valueLong)
-                effectData.Value = (int)valueLong;
-                
-            return effectData;
-        }
-        
-        /// <summary>
-        /// Convert to dictionary
-        /// </summary>
-        public Dictionary<string, object> ToDictionary()
-        {
-            return new Dictionary<string, object>
-            {
-                { "effectId", EffectId },
-                { "effectType", EffectType },
-                { "remainingDuration", RemainingDuration },
-                { "value", Value }
             };
         }
     }

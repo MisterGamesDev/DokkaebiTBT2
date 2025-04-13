@@ -13,6 +13,7 @@ namespace Dokkaebi.Core
     {
         private ITurnPhaseState currentState;
         private int currentTurn = 1;
+        private readonly DokkaebiTurnSystemCore turnSystem;
         
         public event Action<TurnPhase> OnPhaseChanged;
         public event Action<int> OnTurnChanged;
@@ -22,8 +23,11 @@ namespace Dokkaebi.Core
         
         public bool IsTransitionLocked { get; private set; }
         
-        public TurnStateContext()
+        public DokkaebiTurnSystemCore GetTurnSystem() => turnSystem;
+        
+        public TurnStateContext(DokkaebiTurnSystemCore turnSystem)
         {
+            this.turnSystem = turnSystem;
             // Initialize with opening phase
             currentState = new OpeningPhaseState(this);
             currentState.Enter();
@@ -39,47 +43,63 @@ namespace Dokkaebi.Core
         
         public void TransitionToNextState()
         {
+            SmartLogger.Log($"[TurnStateContext.TransitionToNextState] Called. Current state: {currentState?.PhaseType}, IsTransitionLocked: {IsTransitionLocked}", LogCategory.TurnSystem);
+            
             if (currentState == null || IsTransitionLocked)
-                return;
-                
-            if (!currentState.CanTransition())
-                return;
-                
-            ITurnPhaseState nextState = currentState.GetNextState();
-            if (nextState != null)
             {
-                TransitionTo(nextState);
+                SmartLogger.LogWarning($"[TurnStateContext.TransitionToNextState] Cannot transition: currentState is {(currentState == null ? "null" : "not null")}, IsTransitionLocked={IsTransitionLocked}", LogCategory.TurnSystem);
+                return;
             }
+            
+            ITurnPhaseState nextState = currentState.GetNextState();
+            if (nextState == null)
+            {
+                SmartLogger.LogError("[TurnStateContext.TransitionToNextState] GetNextState() returned null!", LogCategory.TurnSystem);
+                return;
+            }
+            
+            SmartLogger.Log($"[TurnStateContext.TransitionToNextState] Transitioning from {currentState.PhaseType} to {nextState.PhaseType}", LogCategory.TurnSystem);
+            TransitionTo(nextState);
         }
         
         public void TransitionTo(ITurnPhaseState newState)
         {
+            SmartLogger.Log($"[TurnStateContext.TransitionTo] Called with new state: {newState?.PhaseType}. Current state: {currentState?.PhaseType}, IsTransitionLocked: {IsTransitionLocked}", LogCategory.TurnSystem);
+            
             if (currentState == null || IsTransitionLocked)
+            {
+                SmartLogger.LogWarning($"[TurnStateContext.TransitionTo] Cannot transition: currentState is {(currentState == null ? "null" : "not null")}, IsTransitionLocked={IsTransitionLocked}", LogCategory.TurnSystem);
                 return;
-                
+            }
+            
             TurnPhase oldPhase = currentState.PhaseType;
             
-            // Exit current state
+            SmartLogger.Log($"[TurnStateContext.TransitionTo] Calling Exit() on current state {oldPhase}", LogCategory.TurnSystem);
             currentState.Exit();
             
-            // Enter new state
+            SmartLogger.Log($"[TurnStateContext.TransitionTo] Setting new state {newState.PhaseType} and calling Enter()", LogCategory.TurnSystem);
             currentState = newState;
             currentState.Enter();
             
-            // Fire phase changed event
             if (oldPhase != currentState.PhaseType)
             {
+                SmartLogger.Log($"[TurnStateContext.TransitionTo] Phase changed from {oldPhase} to {currentState.PhaseType}, firing events", LogCategory.TurnSystem);
                 OnPhaseChanged?.Invoke(currentState.PhaseType);
                 
-                // Special handling for movement phase
                 if (currentState.PhaseType == TurnPhase.MovementPhase)
                 {
+                    SmartLogger.Log("[TurnStateContext.TransitionTo] Movement phase started, firing OnMovementPhaseStart", LogCategory.TurnSystem);
                     OnMovementPhaseStart?.Invoke();
                 }
                 else if (oldPhase == TurnPhase.MovementPhase)
                 {
+                    SmartLogger.Log("[TurnStateContext.TransitionTo] Movement phase ended, firing OnMovementPhaseEnd", LogCategory.TurnSystem);
                     OnMovementPhaseEnd?.Invoke();
                 }
+            }
+            else
+            {
+                SmartLogger.Log($"[TurnStateContext.TransitionTo] Phase remained the same: {currentState.PhaseType}", LogCategory.TurnSystem);
             }
         }
         
@@ -160,6 +180,15 @@ namespace Dokkaebi.Core
         public int GetActivePlayer() => currentState?.GetActivePlayer() ?? 0;
         public bool AllowsMovement() => currentState?.AllowsMovement() ?? false;
         public bool AllowsAuraActivation(bool isPlayerOne) => currentState?.AllowsAuraActivation(isPlayerOne) ?? false;
+        
+        /// <summary>
+        /// Gets the remaining time in the current phase
+        /// </summary>
+        public float GetRemainingTime()
+        {
+            if (currentState == null) return 0f;
+            return Mathf.Max(0f, currentState.GetPhaseTimeLimit() - currentState.GetStateTimer());
+        }
         
         // Force a specific turn number (for debugging or save/load)
         public void SetTurn(int turnNumber)

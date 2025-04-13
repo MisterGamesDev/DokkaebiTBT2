@@ -1,11 +1,14 @@
 using UnityEngine;
 using System.Collections.Generic;
-using Dokkaebi.Core.Data;
-using Dokkaebi.Units;
-using Dokkaebi.Grid;
-using Dokkaebi.Utilities;
-using Dokkaebi.Interfaces;
 using System.Linq;
+using Dokkaebi.Common;
+using Dokkaebi.Core;
+using Dokkaebi.Core.Data;
+using Dokkaebi.Grid;
+using Dokkaebi.Interfaces;
+using Dokkaebi.Units;
+using Dokkaebi.Utilities;
+using Dokkaebi.Pathfinding;
 
 namespace Dokkaebi.Core
 {
@@ -25,6 +28,7 @@ namespace Dokkaebi.Core
 
         // Runtime data
         private Dictionary<int, DokkaebiUnit> activeUnits = new Dictionary<int, DokkaebiUnit>();
+        private Dictionary<GridPosition, IDokkaebiUnit> unitPositions = new Dictionary<GridPosition, IDokkaebiUnit>();
         private int nextUnitId = 1;
         private DokkaebiUnit selectedUnit;
 
@@ -38,14 +42,15 @@ namespace Dokkaebi.Core
             }
             else
             {
-                Debug.LogWarning("Multiple UnitManager instances detected. Destroying duplicate.");
+                SmartLogger.LogWarning("Multiple UnitManager instances detected. Destroying duplicate.", LogCategory.Unit);
                 Destroy(gameObject);
                 return;
             }
 
             if (baseUnitPrefab == null)
             {
-                Debug.LogError("Base unit prefab not assigned to UnitManager!");
+                SmartLogger.LogError("Base unit prefab not assigned to UnitManager!", LogCategory.Unit);
+                return;
             }
         }
 
@@ -54,45 +59,45 @@ namespace Dokkaebi.Core
         /// </summary>
         public void SpawnUnitsFromConfiguration()
         {
-            Debug.Log("[UnitManager.SpawnUnitsFromConfiguration] Method Called.");
+            SmartLogger.Log("[UnitManager.SpawnUnitsFromConfiguration] Starting unit spawning...", LogCategory.Unit);
             var spawnData = DataManager.Instance.GetUnitSpawnData();
             if (spawnData == null) {
-                Debug.LogError("[UnitManager.SpawnUnitsFromConfiguration] Failed to get UnitSpawnData from DataManager!");
-                return; // Stop if data is null
+                SmartLogger.LogError("[UnitManager.SpawnUnitsFromConfiguration] Failed to get UnitSpawnData from DataManager!", LogCategory.Unit);
+                return;
             }
-            Debug.Log($"[UnitManager.SpawnUnitsFromConfiguration] Found UnitSpawnData. Player Spawns: {spawnData.playerUnitSpawns.Count}, Enemy Spawns: {spawnData.enemyUnitSpawns.Count}");
+            SmartLogger.Log($"[UnitManager.SpawnUnitsFromConfiguration] Found UnitSpawnData. Player Spawns: {spawnData.playerUnitSpawns.Count}, Enemy Spawns: {spawnData.enemyUnitSpawns.Count}", LogCategory.Unit);
 
             // Spawn player units
             foreach (var spawnConfig in spawnData.playerUnitSpawns)
             {
-                Debug.Log($"[UnitManager.SpawnUnitsFromConfiguration] Processing Player Spawn Config - UnitDef: {(spawnConfig.unitDefinition != null ? spawnConfig.unitDefinition.name : "NULL")}, Pos: {spawnConfig.spawnPosition}");
                 var unitDefinition = spawnConfig.unitDefinition;
                 if (unitDefinition != null)
                 {
+                    SmartLogger.Log($"[UnitManager.SpawnUnitsFromConfiguration] Spawning player unit {unitDefinition.displayName} at grid position {spawnConfig.spawnPosition}", LogCategory.Unit);
                     SpawnUnit(unitDefinition, spawnConfig.spawnPosition, true);
                 }
                 else
                 {
-                    Debug.LogError($"Player unit spawn configuration is missing unit definition!");
+                    SmartLogger.LogError("[UnitManager.SpawnUnitsFromConfiguration] Player unit spawn configuration is missing unit definition!", LogCategory.Unit);
                 }
             }
 
             // Spawn enemy units
             foreach (var spawnConfig in spawnData.enemyUnitSpawns)
             {
-                Debug.Log($"[UnitManager.SpawnUnitsFromConfiguration] Processing Enemy Spawn Config - UnitDef: {(spawnConfig.unitDefinition != null ? spawnConfig.unitDefinition.name : "NULL")}, Pos: {spawnConfig.spawnPosition}");
                 var unitDefinition = spawnConfig.unitDefinition;
                 if (unitDefinition != null)
                 {
+                    SmartLogger.Log($"[UnitManager.SpawnUnitsFromConfiguration] Spawning enemy unit {unitDefinition.displayName} at grid position {spawnConfig.spawnPosition}", LogCategory.Unit);
                     SpawnUnit(unitDefinition, spawnConfig.spawnPosition, false);
                 }
                 else
                 {
-                    Debug.LogError($"Enemy unit spawn configuration is missing unit definition!");
+                    SmartLogger.LogError("[UnitManager.SpawnUnitsFromConfiguration] Enemy unit spawn configuration is missing unit definition!", LogCategory.Unit);
                 }
             }
 
-            Debug.Log($"Spawned {spawnData.playerUnitSpawns.Count} player units and {spawnData.enemyUnitSpawns.Count} enemy units");
+            SmartLogger.Log($"[UnitManager.SpawnUnitsFromConfiguration] Completed spawning. Active units count: {activeUnits.Count}", LogCategory.Unit);
         }
 
         /// <summary>
@@ -104,51 +109,72 @@ namespace Dokkaebi.Core
         }
 
         /// <summary>
+        /// Handle unit movement event to update position tracking
+        /// </summary>
+        private void HandleUnitMoved(IDokkaebiUnit unit, GridPosition oldPos, GridPosition newPos)
+        {
+            UpdateUnitPositionInDictionary(unit, oldPos, newPos);
+        }
+
+        /// <summary>
         /// Spawn a unit from a definition at a grid position
         /// </summary>
         public DokkaebiUnit SpawnUnit(UnitDefinitionData definition, GridPosition gridPosition, bool isPlayerUnit)
         {
-            if (definition == null)
+            SmartLogger.Log($"[UnitManager.SpawnUnit] Starting spawn for {definition.displayName} at {gridPosition} (Player: {isPlayerUnit})", LogCategory.Unit);
+            
+            if (GridManager.Instance == null)
             {
-                Debug.LogError($"[UnitManager.SpawnUnit] Cannot spawn unit: definition is null");
+                SmartLogger.LogError("[UnitManager.SpawnUnit] GridManager.Instance is null!", LogCategory.Unit);
                 return null;
             }
-            
-            GameObject chosenPrefab = definition.unitPrefab ?? baseUnitPrefab;
-            if (chosenPrefab == null) {
-                Debug.LogError($"[UnitManager.SpawnUnit] Prefab is NULL for unit {definition.displayName}. definition.unitPrefab was {(definition.unitPrefab == null ? "null" : "assigned")}, baseUnitPrefab was {(baseUnitPrefab == null ? "null" : "assigned")}. Cannot spawn.");
-                return null;
-            }
-            Debug.Log($"[UnitManager.SpawnUnit] Using prefab: {chosenPrefab.name} for unit {definition.displayName}");
 
-            // Convert grid position to world position
-            Vector3 worldPosition = GridManager.Instance.GridToWorld(gridPosition);
-            
+            // Get world position from grid position
+            Vector3 worldPosition = GridManager.Instance.GridToWorldPosition(gridPosition);
+            SmartLogger.Log($"[UnitManager.SpawnUnit] Converting grid position {gridPosition} to world position {worldPosition}", LogCategory.Unit);
+
             // Instantiate the unit
-            GameObject unitObject = Instantiate(chosenPrefab, worldPosition, Quaternion.identity);
-            if (unitObject == null) {
-                Debug.LogError($"[UnitManager.SpawnUnit] Instantiate FAILED for prefab {chosenPrefab.name}");
+            GameObject unitObject = Instantiate(definition.unitPrefab ?? baseUnitPrefab, worldPosition, Quaternion.identity);
+            if (unitObject == null)
+            {
+                SmartLogger.LogError($"[UnitManager.SpawnUnit] Failed to instantiate unit prefab for {definition.displayName}", LogCategory.Unit);
                 return null;
             }
-            Debug.Log($"[UnitManager.SpawnUnit] Instantiated GameObject: {unitObject.name}");
+            SmartLogger.Log($"[UnitManager.SpawnUnit] Successfully instantiated unit GameObject", LogCategory.Unit);
 
-            // Get or add the DokkaebiUnit component
+            // Get and configure the DokkaebiUnit component
             DokkaebiUnit unit = unitObject.GetComponent<DokkaebiUnit>();
             if (unit == null)
             {
-                Debug.LogError($"Unit prefab {chosenPrefab.name} is missing DokkaebiUnit component!");
+                SmartLogger.LogError($"[UnitManager.SpawnUnit] DokkaebiUnit component missing on instantiated prefab for {definition.displayName}", LogCategory.Unit);
                 Destroy(unitObject);
                 return null;
             }
+            SmartLogger.Log($"[UnitManager.SpawnUnit] Found DokkaebiUnit component, configuring unit...", LogCategory.Unit);
 
             // Configure the unit
             ConfigureUnit(unit, definition, isPlayerUnit);
-            
-            // Register the unit
-            RegisterUnit(unit);
+            SmartLogger.Log($"[UnitManager.SpawnUnit] Unit configured with definition {definition.displayName}", LogCategory.Unit);
 
-            Vector3 finalWorldPos = unitObject.transform.position; // Get the actual final position
-            Debug.Log($"[UnitManager.SpawnUnit] Successfully configured and returning unit: {unit.GetUnitName()} at GridPos {unit.GetGridPosition()} (World: {finalWorldPos})");
+            // Register with GridManager
+            GridManager.Instance.SetTileOccupant(gridPosition, unit);
+            SmartLogger.Log($"[UnitManager.SpawnUnit] Unit registered with GridManager at {gridPosition}", LogCategory.Unit);
+
+            // Add to active units list
+            RegisterUnit(unit);
+            SmartLogger.Log($"[UnitManager.SpawnUnit] Unit added to active units list. Total active units: {activeUnits.Count}", LogCategory.Unit);
+
+            // Initialize unit position in tracking dictionary
+            unitPositions[gridPosition] = unit;
+            SmartLogger.Log($"[UnitManager.SpawnUnit] Unit position initialized in tracking dictionary at {gridPosition}", LogCategory.Unit);
+
+            // Subscribe to unit events
+            var capturedUnit = unit; // Capture the unit reference
+            unit.OnUnitDefeated += () => HandleUnitDefeat(capturedUnit);
+            unit.OnUnitMoved += HandleUnitMoved;
+            SmartLogger.Log($"[UnitManager.SpawnUnit] Subscribed to unit events", LogCategory.Unit);
+
+            Vector3 finalWorldPos = unitObject.transform.position;
             return unit;
         }
 
@@ -161,8 +187,11 @@ namespace Dokkaebi.Core
             // Set stats
             unit.SetMaxHealth(definition.baseHealth);
             unit.SetCurrentHealth(definition.baseHealth);
+            SmartLogger.Log($"[UnitManager.ConfigureUnit] Unit {definition.displayName} (ID: {unit.GetUnitId()}) configured with health values - Max: {definition.baseHealth}, Current: {unit.GetCurrentHealth()}", LogCategory.Unit);
+            
             unit.SetMaxAura(definition.baseAura);
-            unit.SetCurrentAura(definition.baseAura);
+            AuraManager.Instance.SetMaxAura(isPlayerUnit, definition.baseAura);
+            AuraManager.Instance.ModifyAura(isPlayerUnit, definition.baseAura);
             unit.SetMovementRange(definition.baseMovement);
 
             // Set identity
@@ -202,14 +231,28 @@ namespace Dokkaebi.Core
         /// </summary>
         public DokkaebiUnit GetUnitAtPosition(GridPosition position)
         {
-            return new List<DokkaebiUnit>(activeUnits.Values).FirstOrDefault(u => u.GetGridPosition() == position);
+            if (unitPositions.TryGetValue(position, out IDokkaebiUnit unit))
+            {
+                return unit as DokkaebiUnit;
+            }
+            return null;
         }
 
         public void RemoveUnit(DokkaebiUnit unit)
         {
             if (unit != null && activeUnits.ContainsKey(unit.GetUnitId()))
             {
+                // Remove from active units
                 activeUnits.Remove(unit.GetUnitId());
+
+                // Remove from position tracking
+                var position = unit.GetGridPosition();
+                if (unitPositions.TryGetValue(position, out IDokkaebiUnit unitAtPos) && unitAtPos == unit)
+                {
+                    unitPositions.Remove(position);
+                    SmartLogger.Log($"Removed unit {unit.GetUnitName()} from position tracking at {position}", LogCategory.Unit);
+                }
+
                 Destroy(unit.gameObject);
             }
         }
@@ -224,6 +267,7 @@ namespace Dokkaebi.Core
                 }
             }
             activeUnits.Clear();
+            unitPositions.Clear(); // Clear position tracking
             nextUnitId = 1;
         }
 
@@ -235,7 +279,7 @@ namespace Dokkaebi.Core
             if (unit != null && activeUnits.ContainsKey(unit.GetUnitId()))
             {
                 activeUnits.Remove(unit.GetUnitId());
-                Debug.Log($"Unit {unit.GetUnitName()} unregistered from UnitManager");
+                SmartLogger.Log($"Unit {unit.GetUnitName()} unregistered from UnitManager", LogCategory.Unit);
             }
         }
 
@@ -250,10 +294,10 @@ namespace Dokkaebi.Core
             {
                 unit.ResetMP();
                 unit.ReduceCooldowns();
-                unit.ProcessStatusEffects();
+                StatusEffectSystem.ProcessTurnEndForUnit(unit);
             }
             
-            Debug.Log("Player turn started - processed effects for " + playerUnits.Count + " units");
+            SmartLogger.Log("Player turn started - processed effects for " + playerUnits.Count + " units", LogCategory.Unit);
         }
         
         /// <summary>
@@ -266,10 +310,10 @@ namespace Dokkaebi.Core
             {
                 unit.ResetMP();
                 unit.ReduceCooldowns();
-                unit.ProcessStatusEffects();
+                StatusEffectSystem.ProcessTurnEndForUnit(unit);
             }
             
-            Debug.Log("Enemy turn started - processed effects for " + enemyUnits.Count + " units");
+            SmartLogger.Log("Enemy turn started - processed effects for " + enemyUnits.Count + " units", LogCategory.Unit);
         }
         
         /// <summary>
@@ -283,7 +327,7 @@ namespace Dokkaebi.Core
                 unit.EndTurn();
             }
             
-            Debug.Log("Player turn ended - processed " + playerUnits.Count + " units");
+            SmartLogger.Log("Player turn ended - processed " + playerUnits.Count + " units", LogCategory.Unit);
         }
         
         /// <summary>
@@ -297,7 +341,7 @@ namespace Dokkaebi.Core
                 unit.EndTurn();
             }
             
-            Debug.Log("Enemy turn ended - processed " + enemyUnits.Count + " units");
+            SmartLogger.Log("Enemy turn ended - processed " + enemyUnits.Count + " units", LogCategory.Unit);
         }
         #endregion
         
@@ -371,22 +415,7 @@ namespace Dokkaebi.Core
                 unit.ResetActionState();
             }
             
-            Debug.Log($"Reset action states for {(isPlayer ? "player" : "all")} units");
-        }
-        
-        /// <summary>
-        /// Reset ability states for all units or for a specific player's units
-        /// </summary>
-        public void ResetAbilityStates(bool isPlayer = false)
-        {
-            var units = isPlayer ? GetUnitsByPlayer(isPlayer) : new List<DokkaebiUnit>(activeUnits.Values);
-            
-            foreach (var unit in units)
-            {
-                unit.ResetAbilityState();
-            }
-            
-            Debug.Log($"Reset ability states for {(isPlayer ? "player" : "all")} units");
+            SmartLogger.Log($"Reset action states for {(isPlayer ? "player" : "all")} units", LogCategory.Unit);
         }
         
         /// <summary>
@@ -399,7 +428,7 @@ namespace Dokkaebi.Core
             {
                 unit.SetInteractable(interactable);
             }
-            Debug.Log($"Set {units.Count} {(isPlayer ? "player" : "enemy")} units interactable: {interactable}");
+            SmartLogger.Log($"Set {units.Count} {(isPlayer ? "player" : "enemy")} units interactable: {interactable}", LogCategory.Unit);
         }
         
         /// <summary>
@@ -463,65 +492,7 @@ namespace Dokkaebi.Core
                             if (bestDistance < minDistance)
                             {
                                 unit.SetTargetPosition(bestMove);
-                                Debug.Log($"AI unit {unit.GetUnitName()} planning move to {bestMove}");
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        /// <summary>
-        /// Plan AI abilities for non-player units
-        /// </summary>
-        public void PlanAIAbilities()
-        {
-            var aiUnits = GetUnitsByPlayer(false);
-            
-            foreach (var unit in aiUnits)
-            {
-                // Basic AI logic - use ability on nearest player unit if in range
-                var abilities = unit.GetAbilities();
-                var playerUnits = GetUnitsByPlayer(true);
-                
-                if (abilities.Count > 0 && playerUnits.Count > 0)
-                {
-                    // Find closest player unit
-                    DokkaebiUnit closestUnit = null;
-                    int minDistance = int.MaxValue;
-                    
-                    foreach (var playerUnit in playerUnits)
-                    {
-                        int distance = GridPosition.GetManhattanDistance(
-                            unit.GetGridPosition(), 
-                            playerUnit.GetGridPosition()
-                        );
-                        
-                        if (distance < minDistance)
-                        {
-                            closestUnit = playerUnit;
-                            minDistance = distance;
-                        }
-                    }
-                    
-                    // If found a player unit, try to use ability on it
-                    if (closestUnit != null)
-                    {
-                        // Try each ability, starting with the most powerful
-                        for (int i = abilities.Count - 1; i >= 0; i--)
-                        {
-                            AbilityData ability = abilities[i];
-                            
-                            // Check if ability is on cooldown
-                            if (!unit.IsOnCooldown(ability.abilityType) && unit.GetCurrentAura() >= ability.auraCost)
-                            {
-                                // Check if ability is in range
-                                if (minDistance <= ability.range)
-                                {
-                                    unit.PlanAbilityUse(i, closestUnit.GetGridPosition());
-                                    Debug.Log($"AI unit {unit.GetUnitName()} planning ability {ability.displayName} on {closestUnit.GetUnitName()}");
-                                    break;
-                                }
+                                SmartLogger.Log($"AI unit {unit.GetUnitName()} planning move to {bestMove}", LogCategory.Unit);
                             }
                         }
                     }
@@ -548,24 +519,6 @@ namespace Dokkaebi.Core
         }
         
         /// <summary>
-        /// Get all units with pending abilities
-        /// </summary>
-        public List<DokkaebiUnit> GetUnitsWithPendingAbilities()
-        {
-            List<DokkaebiUnit> unitsWithAbilities = new List<DokkaebiUnit>();
-            
-            foreach (var unit in activeUnits.Values)
-            {
-                if (unit.HasPendingAbility())
-                {
-                    unitsWithAbilities.Add(unit);
-                }
-            }
-            
-            return unitsWithAbilities;
-        }
-        
-        /// <summary>
         /// Update all unit grid positions after movement
         /// </summary>
         public void UpdateAllUnitGridPositions()
@@ -585,7 +538,7 @@ namespace Dokkaebi.Core
         {
             foreach (var unit in activeUnits.Values)
             {
-                unit.ProcessStatusEffects();
+                StatusEffectSystem.ProcessTurnEndForUnit(unit);
             }
         }
         
@@ -631,21 +584,50 @@ namespace Dokkaebi.Core
         #endregion
 
         /// <summary>
+        /// Update a unit's position in the tracking dictionary
+        /// </summary>
+        public void UpdateUnitPositionInDictionary(IDokkaebiUnit unit, GridPosition oldPos, GridPosition newPos)
+        {
+            if (unit == null) return;
+            
+            // Remove unit from old position in UnitManager's dictionary
+            if (unitPositions.TryGetValue(oldPos, out IDokkaebiUnit unitAtOldPos) && unitAtOldPos == unit)
+            {
+                unitPositions.Remove(oldPos);
+                SmartLogger.Log($"Removed unit {unit.DisplayName} from internal dictionary at {oldPos}", LogCategory.Unit);
+            }
+
+            // Add/update unit at the new position in UnitManager's dictionary
+            unitPositions[newPos] = unit;
+            SmartLogger.Log($"Added/Updated unit {unit.DisplayName} in internal dictionary at {newPos}", LogCategory.Unit);
+            
+            SmartLogger.Log($"Updated unit {unit.DisplayName} position in dictionary from {oldPos} to {newPos}", LogCategory.Unit);
+        }
+
+        /// <summary>
         /// Process a unit being defeated and remove it from tracking
         /// </summary>
         public void HandleUnitDefeat(DokkaebiUnit unit)
         {
             if (unit == null) return;
             
-            SmartLogger.Log($"UnitManager processing defeat of {unit.GetUnitName()} (Player: {unit.IsPlayer()})", LogCategory.Unit);
+            SmartLogger.Log($"Unit {unit.GetUnitName()} has been defeated", LogCategory.Unit);
             
             // Trigger the unit defeated event for other systems
             OnUnitDefeated?.Invoke(unit);
             
-            // Unregister the unit
+            // Remove from active units
             if (activeUnits.ContainsKey(unit.GetUnitId()))
             {
                 activeUnits.Remove(unit.GetUnitId());
+            }
+
+            // Remove from position tracking
+            var position = unit.GetGridPosition();
+            if (unitPositions.TryGetValue(position, out IDokkaebiUnit unitAtPos) && unitAtPos == unit)
+            {
+                unitPositions.Remove(position);
+                SmartLogger.Log($"Removed defeated unit {unit.GetUnitName()} from position tracking at {position}", LogCategory.Unit);
             }
         }
 
@@ -659,17 +641,19 @@ namespace Dokkaebi.Core
         /// </summary>
         public DokkaebiUnit GetSelectedUnit()
         {
+            // Add diagnostic log (commented out to avoid spam, uncomment for debugging)
+            // Debug.Log($"[UnitManager GetSelectedUnit] Returning: {(selectedUnit != null ? selectedUnit.GetUnitName() : "NULL")}");
             return selectedUnit;
         }
 
         /// <summary>
         /// Set the currently selected unit
         /// </summary>
-        public void SetSelectedUnit(DokkaebiUnit unit)
+        public void SetSelectedUnit(DokkaebiUnit unitToSelect)
         {
-            
-Debug.Log($"[UnitManager] SetSelectedUnit called. Setting selectedUnit to: {(unit != null ? unit.GetUnitName() : "NULL")}");
-    selectedUnit = unit;
+            SmartLogger.Log($"[UnitManager] SetSelectedUnit called. Attempting to select: {(unitToSelect != null ? unitToSelect.GetUnitName() : "NULL")}", LogCategory.Unit);
+            selectedUnit = unitToSelect;
+            SmartLogger.Log($"[UnitManager] selectedUnit field is now: {(selectedUnit != null ? selectedUnit.GetUnitName() : "NULL")}", LogCategory.Unit);
         }
 
         /// <summary>
@@ -677,8 +661,33 @@ Debug.Log($"[UnitManager] SetSelectedUnit called. Setting selectedUnit to: {(uni
         /// </summary>
         public void ClearSelectedUnit()
         {
-            Debug.Log($"[UnitManager] ClearSelectedUnit called. Setting selectedUnit to NULL.");
-    selectedUnit = null;
+            SmartLogger.Log("[UnitManager] ClearSelectedUnit called. Clearing selection.", LogCategory.Unit);
+            selectedUnit = null;
+            SmartLogger.Log("[UnitManager] Selection cleared.", LogCategory.Unit);
+        }
+
+        /// <summary>
+        /// Unsubscribe from unit events and clean up
+        /// </summary>
+        private void OnDestroy()
+        {
+            // Unsubscribe from all unit events
+            foreach (var unit in activeUnits.Values)
+            {
+                if (unit != null)
+                {
+                    unit.OnUnitDefeated -= () => HandleUnitDefeat(unit);
+                    unit.OnUnitMoved -= HandleUnitMoved;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Get a read-only view of the unit positions dictionary for debugging
+        /// </summary>
+        public System.Collections.Generic.IReadOnlyDictionary<GridPosition, IDokkaebiUnit> GetUnitPositionsReadOnly()
+        {
+            return new System.Collections.ObjectModel.ReadOnlyDictionary<GridPosition, IDokkaebiUnit>(this.unitPositions);
         }
     }
 } 

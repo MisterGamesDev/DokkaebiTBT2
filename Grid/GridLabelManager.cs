@@ -133,7 +133,7 @@ namespace Dokkaebi.Grid
             
             // Set position (center of the cell, elevated by textHeight)
             Vector3 worldPos = DokkaebiGridConverter.GridToWorld(pos);
-            // Only add height offset, GridToWorld already centers in cell
+            // Adjust position to be centered in the cell
             worldPos.y += textHeight;
             labelObj.transform.position = worldPos;
             
@@ -145,7 +145,10 @@ namespace Dokkaebi.Grid
             textMesh.text = $"({pos.x},{pos.z})";
             textMesh.fontSize = textSize;
             textMesh.color = textColor;
+            
+            // Improve text centering with both horizontal and vertical alignment
             textMesh.alignment = TextAlignmentOptions.Center;
+            textMesh.verticalAlignment = VerticalAlignmentOptions.Middle;
             
             // Set font asset if provided
             if (font != null)
@@ -153,9 +156,15 @@ namespace Dokkaebi.Grid
                 textMesh.font = font;
             }
             
-            // Adjust scale and settings for better visibility
+            // Configure RectTransform for better centering
             textMesh.rectTransform.sizeDelta = new Vector2(1, 1);
+            textMesh.rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            textMesh.rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+            textMesh.rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
             textMesh.enableWordWrapping = false;
+            
+            // Ensure text is rendered on top of other geometry
+            textMesh.renderMode = TextRenderFlags.DontRender | TextRenderFlags.Render;
         }
         
         /// <summary>

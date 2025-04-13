@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 using Dokkaebi.Utilities;
 using Dokkaebi.Interfaces;
@@ -18,9 +19,13 @@ namespace Dokkaebi.Core
             {
                 if (instance == null)
                 {
-                    GameObject obj = new GameObject("DokkaebiUpdateManager");
-                    instance = obj.AddComponent<DokkaebiUpdateManager>();
-                    DontDestroyOnLoad(obj);
+                    instance = FindObjectOfType<DokkaebiUpdateManager>();
+                    if (instance == null)
+                    {
+                        GameObject obj = new GameObject("DokkaebiUpdateManager");
+                        instance = obj.AddComponent<DokkaebiUpdateManager>();
+                        DontDestroyOnLoad(obj);
+                    }
                 }
                 return instance;
             }
@@ -49,144 +54,152 @@ namespace Dokkaebi.Core
         private bool isLateUpdating = false;
 
         private void Awake()
-{
-    Debug.Log($"[UpdateManager] Awake() called on GameObject: {gameObject.name} (InstanceID: {gameObject.GetInstanceID()})"); // Add this log
-
-    // Check if an instance already exists AND it's not this instance
-    if (instance != null && instance != this)
-    {
-        Debug.LogError($"[UpdateManager] DUPLICATE INSTANCE DETECTED on {gameObject.name} (InstanceID: {gameObject.GetInstanceID()})! Destroying this duplicate. The original singleton is on {instance.gameObject.name} (InstanceID: {instance.gameObject.GetInstanceID()}).");
-        Destroy(gameObject); // Destroy this GameObject because it's a duplicate
-        return;
-    }
-    // If no instance exists yet, this one becomes the singleton
-    else if (instance == null)
-    {
-        Debug.Log($"[UpdateManager] Setting static instance to {gameObject.name} (InstanceID: {gameObject.GetInstanceID()}). Applying DontDestroyOnLoad.");
-        instance = this;
-        // IMPORTANT: Only apply DontDestroyOnLoad if the GameObject is a root object
-        if (transform.parent == null)
         {
-             DontDestroyOnLoad(gameObject);
-        }
-        else
-        {
-            Debug.LogWarning($"[UpdateManager] {gameObject.name} is not a root object. DontDestroyOnLoad was NOT applied. Ensure the UpdateManager is on a root GameObject.", gameObject);
-        }
-    }
-    // Else: instance == this, which means Awake() was called again on the original singleton (e.g., scene reload), do nothing special.
-    // Initialization that should only happen once for the singleton should go here or in Start() after the singleton check.
-    // Example: InitializeDataLookups(); if moved from another script or needed here.
-}
+            SmartLogger.Log($"[UpdateManager] Awake() called on GameObject: {gameObject.name} (InstanceID: {gameObject.GetInstanceID()})", LogCategory.Performance, this);
 
-        
+            if (instance != null && instance != this)
+            {
+                SmartLogger.LogError($"[UpdateManager] DUPLICATE INSTANCE DETECTED on {gameObject.name} (InstanceID: {gameObject.GetInstanceID()})! Destroying this duplicate. The original singleton is on {instance.gameObject.name}", LogCategory.Performance, this);
+                Destroy(gameObject);
+                return;
+            }
+
+            instance = this;
+            SmartLogger.Log($"[UpdateManager] Setting static instance to {gameObject.name} (InstanceID: {gameObject.GetInstanceID()}). Applying DontDestroyOnLoad.", LogCategory.Performance, this);
+
+            // Try to apply DontDestroyOnLoad
+            Transform parent = transform.parent;
+            if (parent == null)
+            {
+                DontDestroyOnLoad(gameObject);
+            }
+            else
+            {
+                SmartLogger.LogWarning($"[UpdateManager] {gameObject.name} is not a root object. DontDestroyOnLoad was NOT applied. Ensure the UpdateManager is on a root GameObject.", LogCategory.Performance, this);
+            }
+        }
+
         private void Update()
         {
-            //Debug.Log($"[UpdateManager] Update() frame {Time.frameCount}. Observer Count Before Processing: {updateObservers.Count}, Pending Adds: {pendingAddUpdateObservers.Count}, Pending Removes: {pendingRemoveUpdateObservers.Count}");
-            // Process any pending changes first
+            //SmartLogger.Log($"[UpdateManager.Update] Frame {Time.frameCount}. Running ProcessPendingObserverChanges...", LogCategory.Performance, this);
             ProcessPendingObserverChanges();
-            
+
+            if (updateObservers.Count == 0)
+            {
+                using (var sb = new StringBuilderScope(out StringBuilder builder))
+                {
+                    builder.AppendLine("[UpdateManager.Update] Observer list details:");
+                    builder.AppendLine($"- Main list count: {updateObservers.Count}");
+                    builder.AppendLine($"- Pending adds: {pendingAddUpdateObservers.Count}");
+                    builder.AppendLine($"- Pending removes: {pendingRemoveUpdateObservers.Count}");
+                    SmartLogger.LogWithBuilder(builder, LogCategory.Performance, this);
+                }
+                SmartLogger.Log($"[UpdateManager.Update] Observer list is EMPTY.", LogCategory.Performance, this);
+                return;
+            }
+
             isUpdating = true;
             float deltaTime = Time.deltaTime;
-            
-            // Use for loop for performance (avoid allocation)
+
             for (int i = 0; i < updateObservers.Count; i++)
             {
+                if (updateObservers[i] == null)
+                {
+                    SmartLogger.LogWarning($"[UpdateManager.Update] Observer at index {i} was null!", LogCategory.Performance, this);
+                    continue;
+                }
+
+                string observerName = updateObservers[i].ToString() ?? "Unknown";
+                int instanceId = updateObservers[i].GetHashCode();
+
                 try
                 {
                     updateObservers[i].CustomUpdate(deltaTime);
                 }
-                catch (Exception e)
+                catch (System.Exception e)
                 {
-                    Debug.LogError($"Error in CustomUpdate for {updateObservers[i]}: {e}");
+                    SmartLogger.LogError($"[UpdateManager.Update] Error in CustomUpdate for '{observerName}' (InstanceID: {instanceId}): {SmartLogger.FormatException(e)}", LogCategory.Performance, this);
                 }
             }
-            
+
             isUpdating = false;
-            
-            // Process any observer changes that occurred during update
-            ProcessPendingObserverChanges();
         }
         
         private void FixedUpdate()
         {
-            // Process any pending changes first
-            ProcessPendingFixedObserverChanges();
-            
             isFixedUpdating = true;
             float deltaTime = Time.fixedDeltaTime;
-            
+
             for (int i = 0; i < fixedUpdateObservers.Count; i++)
             {
                 try
                 {
                     fixedUpdateObservers[i].CustomFixedUpdate(deltaTime);
                 }
-                catch (Exception e)
+                catch (System.Exception e)
                 {
-                    Debug.LogError($"Error in CustomFixedUpdate for {fixedUpdateObservers[i]}: {e}");
+                    SmartLogger.LogError($"Error in CustomFixedUpdate for {fixedUpdateObservers[i]}: {SmartLogger.FormatException(e)}", LogCategory.Performance, this);
                 }
             }
-            
+
             isFixedUpdating = false;
-            
-            // Process any observer changes that occurred during update
-            ProcessPendingFixedObserverChanges();
         }
         
         private void LateUpdate()
         {
-            // Process any pending changes first
-            ProcessPendingLateObserverChanges();
-            
             isLateUpdating = true;
             float deltaTime = Time.deltaTime;
-            
+
             for (int i = 0; i < lateUpdateObservers.Count; i++)
             {
                 try
                 {
                     lateUpdateObservers[i].CustomLateUpdate(deltaTime);
                 }
-                catch (Exception e)
+                catch (System.Exception e)
                 {
-                    Debug.LogError($"Error in CustomLateUpdate for {lateUpdateObservers[i]}: {e}");
+                    SmartLogger.LogError($"Error in CustomLateUpdate for {lateUpdateObservers[i]}: {SmartLogger.FormatException(e)}", LogCategory.Performance, this);
                 }
             }
-            
+
             isLateUpdating = false;
-            
-            // Process any observer changes that occurred during update
-            ProcessPendingLateObserverChanges();
         }
-        
+
         private void ProcessPendingObserverChanges()
-{
-    int initialCount = updateObservers.Count;
+        {
+            if (pendingAddUpdateObservers.Count == 0 && pendingRemoveUpdateObservers.Count == 0)
+                return;
 
-    if (pendingAddUpdateObservers.Count > 0)
-    {
-        // v-- ADD/CONFIRM THIS LOG --v
-        Debug.Log($"[UpdateManager InstanceID: {gameObject.GetInstanceID()}] Processing Pending Adds: Adding {pendingAddUpdateObservers.Count} observers to main list.");
-        updateObservers.AddRange(pendingAddUpdateObservers);
-        pendingAddUpdateObservers.Clear();
-    }
+            SmartLogger.Log($"[UpdateManager.ProcessPending] Running. Pending Adds: {pendingAddUpdateObservers.Count}, Pending Removes: {pendingRemoveUpdateObservers.Count}. Current Main Count: {updateObservers.Count}", LogCategory.Performance, this);
 
-    if (pendingRemoveUpdateObservers.Count > 0)
-    {
-        // v-- ADD/CONFIRM THIS LOG --v
-         Debug.Log($"[UpdateManager InstanceID: {gameObject.GetInstanceID()}] Processing Pending Removes: Removing {pendingRemoveUpdateObservers.Count} observers.");
-        // ... (removal logic) ...
-    }
+            int initialCount = updateObservers.Count;
 
-    // v-- ADD/CONFIRM THIS LOG --v
-    if (updateObservers.Count != initialCount) {
-         Debug.Log($"[UpdateManager InstanceID: {gameObject.GetInstanceID()}] Observer count changed from {initialCount} to {updateObservers.Count} after processing pending changes.");
-    } else if (pendingAddUpdateObservers.Count > 0 || pendingRemoveUpdateObservers.Count > 0) {
-        // Log even if count didn't change but pending lists were processed (might indicate an issue)
-        Debug.Log($"[UpdateManager InstanceID: {gameObject.GetInstanceID()}] Processed pending lists, but observer count remained {updateObservers.Count}.");
-    }
-}
+            // Process additions
+            if (pendingAddUpdateObservers.Count > 0)
+            {
+                updateObservers.AddRange(pendingAddUpdateObservers);
+                SmartLogger.Log($"[UpdateManager.ProcessPending] Added {pendingAddUpdateObservers.Count} observers from pending list.", LogCategory.Performance, this);
+                pendingAddUpdateObservers.Clear();
+            }
+
+            // Process removals
+            if (pendingRemoveUpdateObservers.Count > 0)
+            {
+                int removedCount = 0;
+                for (int i = updateObservers.Count - 1; i >= 0; i--)
+                {
+                    if (pendingRemoveUpdateObservers.Contains(updateObservers[i]))
+                    {
+                        updateObservers.RemoveAt(i);
+                        removedCount++;
+                    }
+                }
+                SmartLogger.Log($"[UpdateManager.ProcessPending] Removed {removedCount} observers from main list based on pending remove list.", LogCategory.Performance, this);
+                pendingRemoveUpdateObservers.Clear();
+            }
+
+            SmartLogger.Log($"[UpdateManager.ProcessPending] Finished. Main list count changed from {initialCount} to {updateObservers.Count}.", LogCategory.Performance, this);
+        }
         
         private void ProcessPendingFixedObserverChanges()
         {
@@ -229,34 +242,28 @@ namespace Dokkaebi.Core
         }
         
         // Registration methods for Update
-       public void RegisterUpdateObserver(IUpdateObserver observer)
-{
-    if (observer == null) return;
-
-    // Add this log line from one of the previous debugging steps if you still want confirmation registration is attempted:
-    // string observerName = (observer as MonoBehaviour)?.gameObject.name ?? observer.GetType().Name;
-    // int instanceId = (observer as MonoBehaviour)?.gameObject.GetInstanceID() ?? 0;
-    // Debug.Log($"[UpdateManager InstanceID: {gameObject.GetInstanceID()}] RegisterUpdateObserver called for: {observerName} (InstanceID: {instanceId}). isUpdating={isUpdating}");
-
-
-    if (isUpdating) // Check if currently inside the Update loop
-    {
-        // If called during the update loop, add to a pending list to avoid modifying the collection while iterating
-        if (!updateObservers.Contains(observer) && !pendingAddUpdateObservers.Contains(observer))
+        public void RegisterUpdateObserver(IUpdateObserver observer)
         {
-            pendingAddUpdateObservers.Add(observer);
+            if (observer == null) return;
+            
+            string observerName = observer.GetType().Name;
+            int instanceId = (observer as MonoBehaviour)?.gameObject.GetInstanceID() ?? 0;
+            SmartLogger.Log($"[UpdateManager.Register] Received registration for '{observerName}' (InstanceID: {instanceId}). isUpdating = {isUpdating}", LogCategory.Performance, this);
+
+            if (isUpdating)
+            {
+                if (!updateObservers.Contains(observer) && !pendingAddUpdateObservers.Contains(observer))
+                {
+                    pendingAddUpdateObservers.Add(observer);
+                    SmartLogger.Log($"[UpdateManager.Register] Added '{observerName}' to PENDING ADD list.", LogCategory.Performance, this);
+                }
+            }
+            else if (!updateObservers.Contains(observer))
+            {
+                updateObservers.Add(observer);
+                SmartLogger.Log($"[UpdateManager.Register] Added '{observerName}' directly to MAIN list.", LogCategory.Performance, this);
+            }
         }
-    }
-    else if (!updateObservers.Contains(observer)) // If not updating, and not already in the list, add directly
-    {
-        updateObservers.Add(observer);
-    }
-    // Optional: Add a warning log here if the observer was already in the list, like in the debug versions.
-    // else
-    // {
-    //     Debug.LogWarning($"[UpdateManager InstanceID: {gameObject.GetInstanceID()}] Observer {observerName} (InstanceID: {instanceId}) already exists in main list.");
-    // }
-}
         
         public void UnregisterUpdateObserver(IUpdateObserver observer)
         {

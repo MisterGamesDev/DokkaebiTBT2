@@ -26,12 +26,15 @@ namespace Dokkaebi.Core.Data
         public int radius = 1;
 
         [Header("Effects")]
+        public int initialDamageAmount = 0;
+        public DamageType initialDamageType = DamageType.Physical;
         public int damagePerTurn = 0;
         // Assuming DamageType enum is accessible (likely from Dokkaebi.Common or Dokkaebi.Core.Data)
         public DamageType damageType = DamageType.Physical;
         public int healPerTurn = 0;
         // Assuming StatusEffectData is accessible (likely from Dokkaebi.Core.Data)
         public StatusEffectData applyStatusEffect;
+        public AllegianceTarget affects = AllegianceTarget.Any;
 
         [Header("Movement Modifiers")]
         public float movementCostMultiplier = 1.0f;
