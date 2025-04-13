@@ -18,6 +18,15 @@ namespace Dokkaebi.Interfaces
         bool IsWalkable(Vector2Int coordinates);
 
         /// <summary>
+        /// Checks if the grid cell at the given coordinates is considered walkable/traversable,
+        /// optionally ignoring a specific unit when checking occupancy.
+        /// </summary>
+        /// <param name="coordinates">The grid coordinates.</param>
+        /// <param name="requestingUnit">The unit requesting the check (will be ignored for occupancy).</param>
+        /// <returns>True if the cell is walkable, false otherwise.</returns>
+        bool IsWalkable(GridPosition coordinates, IDokkaebiUnit requestingUnit);
+
+        /// <summary>
         /// Gets the movement cost associated with traversing the cell at the given coordinates.
         /// </summary>
         /// <param name="coordinates">The grid coordinates.</param>

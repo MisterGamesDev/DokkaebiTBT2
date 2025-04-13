@@ -4,11 +4,13 @@ using TMPro;
 using Dokkaebi.Core;
 using Dokkaebi.Units;
 using Dokkaebi.Common;
+using Dokkaebi.Core.Networking;
+using Dokkaebi.Utilities;
 using Dokkaebi.Interfaces;
 
 namespace Dokkaebi.UI
 {
-    public class PlayerResourceUI : MonoBehaviour
+    public class PlayerResourceUI : MonoBehaviour, DokkaebiUpdateManager.IUpdateObserver
     {
         [Header("Aura Display")]
         [SerializeField] private Slider auraSlider;
@@ -17,20 +19,20 @@ namespace Dokkaebi.UI
         [SerializeField] private Color fullAuraColor = Color.blue;
         [SerializeField] private Color lowAuraColor = Color.red;
 
-        [Header("Ability Usage")]
-        [SerializeField] private TextMeshProUGUI abilityUsageText;
-        [SerializeField] private Slider abilityUsageSlider;
-        [SerializeField] private Image abilityUsageSliderFill;
-        [SerializeField] private Color availableAbilityColor = Color.green;
-        [SerializeField] private Color usedAbilityColor = Color.gray;
+        [Header("Moves Used")]
+        [SerializeField] private TextMeshProUGUI movesUsedText;
+        [SerializeField] private Slider movesUsedSlider;
+        [SerializeField] private Image movesUsedSliderFill;
+        [SerializeField] private Color availableMovesColor = Color.green;
+        [SerializeField] private Color usedMovesColor = Color.gray;
 
         [Header("Aura Gain Display")]
         [SerializeField] private GameObject auraGainDisplay;
 
         private UnitStateManager unitStateManager;
         private DokkaebiTurnSystemCore turnSystem;
-        private int currentAbilityUsage = 0;
-        private int maxAbilitiesPerPhase = 2;
+        private bool isPlayer1UI = true;
+        private IDokkaebiUnit currentUnit;
 
         private void Awake()
         {
@@ -39,7 +41,7 @@ namespace Dokkaebi.UI
 
             if (unitStateManager == null || turnSystem == null)
             {
-                Debug.LogError("Required managers not found in scene!");
+                SmartLogger.LogError("Required managers not found in scene!", LogCategory.General);
                 return;
             }
         }
@@ -51,15 +53,72 @@ namespace Dokkaebi.UI
             {
                 turnSystem.OnPhaseChanged += HandlePhaseChanged;
             }
+
+            // Subscribe to game state updates
+            if (GameStateManager.Instance != null)
+            {
+                GameStateManager.Instance.OnGameStateUpdated += HandleGameStateUpdate;
+            }
+
+            // Initial display update
+            UpdateDisplays();
+
+            // Start polling for selected unit changes
+            DokkaebiUpdateManager.Instance.RegisterUpdateObserver(this);
         }
 
         private void OnDisable()
         {
-            // Unsubscribe from events
+            // Unsubscribe from turn system events
             if (turnSystem != null)
             {
                 turnSystem.OnPhaseChanged -= HandlePhaseChanged;
             }
+
+            // Unsubscribe from game state updates
+            if (GameStateManager.Instance != null)
+            {
+                GameStateManager.Instance.OnGameStateUpdated -= HandleGameStateUpdate;
+            }
+
+            // Unsubscribe from current unit's events
+            UnsubscribeFromCurrentUnit();
+
+            // Stop polling for selected unit changes
+            if (DokkaebiUpdateManager.Instance != null)
+            {
+                DokkaebiUpdateManager.Instance.UnregisterUpdateObserver(this);
+            }
+        }
+
+        private void UnsubscribeFromCurrentUnit()
+        {
+            if (currentUnit is DokkaebiUnit dokkaebiUnit)
+            {
+                dokkaebiUnit.OnUnitAuraChanged -= HandleUnitAuraChanged;
+            }
+        }
+
+        private void HandleUnitAuraChanged(int oldValue, int newValue)
+        {
+            if (currentUnit is DokkaebiUnit dokkaebiUnit)
+            {
+                UpdateAuraDisplay(newValue, dokkaebiUnit.GetMaxUnitAura());
+            }
+        }
+
+        private void HandleGameStateUpdate(GameStateData newState)
+        {
+            if (newState == null || unitStateManager == null) return;
+
+            // Get the relevant player data
+            var playerData = isPlayer1UI ? newState.Player1 : newState.Player2;
+            if (playerData == null) return;
+
+            // Update moves used display
+            int currentMoves = isPlayer1UI ? unitStateManager.GetPlayer1UnitsMoved() : unitStateManager.GetPlayer2UnitsMoved();
+            int requiredMoves = isPlayer1UI ? unitStateManager.GetRequiredPlayer1Moves() : unitStateManager.GetRequiredPlayer2Moves();
+            UpdateMovesUsedDisplay(currentMoves, requiredMoves);
         }
 
         private void HandlePhaseChanged(TurnPhase phase)
@@ -71,45 +130,104 @@ namespace Dokkaebi.UI
                              phase == TurnPhase.AuraPhase2B;
             
             auraGainDisplay.SetActive(isAuraPhase);
+
+            // Update displays when phase changes
+            UpdateDisplays();
         }
 
-        private void UpdateAuraDisplay(int currentAura)
+        private void UpdateDisplays()
+        {
+            if (unitStateManager == null) return;
+
+            // Update moves used display
+            int currentMoves = isPlayer1UI ? unitStateManager.GetPlayer1UnitsMoved() : unitStateManager.GetPlayer2UnitsMoved();
+            int requiredMoves = isPlayer1UI ? unitStateManager.GetRequiredPlayer1Moves() : unitStateManager.GetRequiredPlayer2Moves();
+            UpdateMovesUsedDisplay(currentMoves, requiredMoves);
+
+            // Update aura display if we have a current unit
+            if (currentUnit is DokkaebiUnit dokkaebiUnit)
+            {
+                UpdateAuraDisplay(dokkaebiUnit.GetCurrentUnitAura(), dokkaebiUnit.GetMaxUnitAura());
+            }
+            else
+            {
+                // If no unit is selected, show 0/0 aura
+                UpdateAuraDisplay(0, 0);
+            }
+        }
+
+        private void UpdateAuraDisplay(int currentAura, int maxAura)
         {
             if (auraSlider != null)
             {
-                auraSlider.value = (float)currentAura / 100; // Assuming max aura is 100
+                auraSlider.maxValue = maxAura;
+                auraSlider.value = currentAura;
             }
 
             if (auraText != null)
             {
-                auraText.text = $"{currentAura}/100";
+                auraText.text = $"{currentAura}/{maxAura}";
             }
 
             if (auraSliderFill != null)
             {
                 // Update color based on Aura amount
-                float auraPercentage = (float)currentAura / 100;
+                float auraPercentage = maxAura > 0 ? (float)currentAura / maxAura : 0f;
                 auraSliderFill.color = Color.Lerp(lowAuraColor, fullAuraColor, auraPercentage);
             }
         }
 
-        private void UpdateAbilityUsageDisplay(int used, int total)
+        private void UpdateMovesUsedDisplay(int used, int total)
         {
-            if (abilityUsageText != null)
+            if (movesUsedText != null)
             {
-                abilityUsageText.text = $"Abilities Used: {used}/{total}";
+                movesUsedText.text = $"Moves Used: {used}/{total}";
             }
 
-            if (abilityUsageSlider != null)
+            if (movesUsedSlider != null)
             {
-                abilityUsageSlider.value = (float)used / total;
+                movesUsedSlider.maxValue = total;
+                movesUsedSlider.value = used;
             }
 
-            if (abilityUsageSliderFill != null)
+            if (movesUsedSliderFill != null)
             {
-                // Update color based on remaining abilities
+                // Update color based on remaining moves
                 float remainingPercentage = 1f - ((float)used / total);
-                abilityUsageSliderFill.color = Color.Lerp(usedAbilityColor, availableAbilityColor, remainingPercentage);
+                movesUsedSliderFill.color = Color.Lerp(usedMovesColor, availableMovesColor, remainingPercentage);
+            }
+        }
+
+        public void SetIsPlayer1UI(bool isPlayer1)
+        {
+            isPlayer1UI = isPlayer1;
+            UpdateDisplays();
+        }
+
+        public void CustomUpdate(float deltaTime)
+        {
+            // Check for selected unit changes
+            var selectedUnit = UnitManager.Instance?.GetSelectedUnit();
+            
+            // Only update if the selected unit has changed and matches our player side
+            if (selectedUnit != currentUnit && selectedUnit != null && selectedUnit.IsPlayerControlled == isPlayer1UI)
+            {
+                UnsubscribeFromCurrentUnit();
+                currentUnit = selectedUnit;
+                
+                // Subscribe to the new unit's events
+                if (currentUnit is DokkaebiUnit dokkaebiUnit)
+                {
+                    dokkaebiUnit.OnUnitAuraChanged += HandleUnitAuraChanged;
+                    UpdateAuraDisplay(dokkaebiUnit.GetCurrentUnitAura(), dokkaebiUnit.GetMaxUnitAura());
+                }
+            }
+            else if (selectedUnit == null && currentUnit != null)
+            {
+                // Clear current unit if nothing is selected
+                UnsubscribeFromCurrentUnit();
+                currentUnit = null;
+                UpdateAuraDisplay(0, 0);
             }
         }
     }

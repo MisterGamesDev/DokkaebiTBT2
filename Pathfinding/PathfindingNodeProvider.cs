@@ -2,6 +2,8 @@ using UnityEngine;
 using Pathfinding;
 using Dokkaebi.Common;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Grid;
+using Dokkaebi.Utilities;
 
 namespace Dokkaebi.Pathfinding
 {
@@ -28,38 +30,40 @@ namespace Dokkaebi.Pathfinding
         }
         
         private void Start()
-{
-    // Find MonoBehaviours to check for interface implementations
-    MonoBehaviour[] allMonoBehaviours = FindObjectsOfType<MonoBehaviour>();
-    
-    // Find and cache the IGridSystem
-    gridSystem = null;
-    foreach (var behaviour in allMonoBehaviours)
-    {
-        gridSystem = behaviour as IGridSystem;
-        if (gridSystem != null)
-            break;
-    }
-    
-    if (gridSystem == null)
-    {
-        Debug.LogError("PathfindingNodeProvider: No IGridSystem implementation found in the scene.");
-    }
-    
-    // Find and cache the IPathfindingGridInfo
-    gridInfo = null;
-    foreach (var behaviour in allMonoBehaviours)
-    {
-        gridInfo = behaviour as IPathfindingGridInfo;
-        if (gridInfo != null)
-            break;
-    }
-    
-    if (gridInfo == null)
-    {
-        Debug.LogError("PathfindingNodeProvider: No IPathfindingGridInfo implementation found in the scene.");
-    }
-}
+        {
+            // Find MonoBehaviours to check for interface implementations
+            MonoBehaviour[] allMonoBehaviours = FindObjectsOfType<MonoBehaviour>();
+            
+            // Find and cache the IGridSystem
+            gridSystem = null;
+            foreach (var behaviour in allMonoBehaviours)
+            {
+                gridSystem = behaviour as IGridSystem;
+                if (gridSystem != null)
+                    break;
+            }
+            
+            if (gridSystem == null)
+            {
+                SmartLogger.LogError("PathfindingNodeProvider: No IGridSystem implementation found in the scene.", LogCategory.Pathfinding);
+                return;
+            }
+            
+            // Find and cache the IPathfindingGridInfo
+            gridInfo = null;
+            foreach (var behaviour in allMonoBehaviours)
+            {
+                gridInfo = behaviour as IPathfindingGridInfo;
+                if (gridInfo != null)
+                    break;
+            }
+            
+            if (gridInfo == null)
+            {
+                SmartLogger.LogError("PathfindingNodeProvider: No IPathfindingGridInfo implementation found in the scene.", LogCategory.Pathfinding);
+                return;
+            }
+        }
 
         /// <summary>
         /// Gets a node from a world position

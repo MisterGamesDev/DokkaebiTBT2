@@ -6,6 +6,8 @@ using Dokkaebi.Grid;
 using Dokkaebi.Pathfinding;
 using Dokkaebi.Core;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Common;
+using Dokkaebi.Utilities;
 
 namespace Dokkaebi.UI
 {
@@ -28,17 +30,52 @@ namespace Dokkaebi.UI
         private DokkaebiUnit selectedUnit;
         private AbilityData selectedAbility;
         private bool isAbilityTargetingMode = false;
+        private PlayerActionManager playerActionManager;
+        private UnitManager unitManager;
+
+        private void Awake()
+        {
+            playerActionManager = PlayerActionManager.Instance;
+            unitManager = UnitManager.Instance;
+            if (playerActionManager == null)
+            {
+                SmartLogger.LogError("PlayerActionManager not found in scene!", LogCategory.UI);
+                return;
+            }
+            if (unitManager == null)
+            {
+                SmartLogger.LogError("UnitManager not found in scene!", LogCategory.UI);
+                return;
+            }
+        }
 
         private void OnEnable()
         {
             // Subscribe to input events
-            PlayerActionManager.Instance.OnCommandResult += HandleCommandResult;
+            if (playerActionManager != null)
+            {
+                playerActionManager.OnCommandResult += HandleCommandResult;
+                playerActionManager.OnAbilityTargetingStarted += HandleAbilityTargetingStarted;
+                playerActionManager.OnAbilityTargetingCancelled += HandleAbilityTargetingCancelled;
+            }
         }
 
         private void OnDisable()
         {
             // Unsubscribe from events
-            PlayerActionManager.Instance.OnCommandResult -= HandleCommandResult;
+            if (playerActionManager != null)
+            {
+                playerActionManager.OnCommandResult -= HandleCommandResult;
+                playerActionManager.OnAbilityTargetingStarted -= HandleAbilityTargetingStarted;
+                playerActionManager.OnAbilityTargetingCancelled -= HandleAbilityTargetingCancelled;
+            }
+
+            // Clean up
+            ClearHighlights();
+            if (movementLine != null)
+            {
+                movementLine.enabled = false;
+            }
         }
 
         private void Start()
@@ -55,17 +92,61 @@ namespace Dokkaebi.UI
 
         private void HandleCommandResult(bool success, string message)
         {
-            // Handle command results here
-            // For example, show success/failure messages
-            Debug.Log($"Command result: {success} - {message}");
+            // Clear previews on command completion
+            if (isAbilityTargetingMode)
+            {
+                ClearHighlights();
+                isAbilityTargetingMode = false;
+            }
+            else
+            {
+                if (movementLine != null)
+                {
+                    movementLine.enabled = false;
+                }
+            }
+        }
+
+        private void HandleAbilityTargetingStarted(AbilityData ability)
+        {
+            selectedAbility = ability;
+            selectedUnit = unitManager.GetSelectedUnit();
+            isAbilityTargetingMode = true;
+
+            // Clear any existing previews
+            ClearHighlights();
+            if (movementLine != null)
+            {
+                movementLine.enabled = false;
+            }
+        }
+
+        private void HandleAbilityTargetingCancelled()
+        {
+            selectedAbility = null;
+            isAbilityTargetingMode = false;
+            ClearHighlights();
+        }
+
+        public void UpdatePreview(Vector2Int hoverPosition)
+        {
+            if (isAbilityTargetingMode)
+            {
+                UpdateAbilityPreview(hoverPosition);
+            }
+            else
+            {
+                UpdateMovementPreview(hoverPosition);
+            }
         }
 
         private void UpdateMovementPreview(Vector2Int targetPos)
         {
-            if (selectedUnit == null) return;
+            selectedUnit = unitManager.GetSelectedUnit();
+            if (selectedUnit == null || !movementLine) return;
 
             // Convert Vector2Int to GridPosition
-            GridPosition startPos = GridPosition.FromVector2Int(selectedUnit.GetGridPosition().ToVector2Int());
+            GridPosition startPos = selectedUnit.GetGridPosition();
             GridPosition endPos = GridPosition.FromVector2Int(targetPos);
 
             // Get path from unit to target using GridManager
@@ -81,13 +162,15 @@ namespace Dokkaebi.UI
                 movementLine.positionCount = path.Count;
                 for (int i = 0; i < path.Count; i++)
                 {
-                    Vector3 worldPos = GridManager.Instance.GridToWorld(path[i]);
+                    Vector3 worldPos = GridManager.Instance.GridToWorldPosition(path[i]);
                     movementLine.SetPosition(i, worldPos + Vector3.up * highlightHeight);
                 }
 
                 // Set color based on path validity
-                movementLine.startColor = validPathColor;
-                movementLine.endColor = validPathColor;
+                bool isValidPath = path.Count <= selectedUnit.GetMovementRange() + 1;
+                Color pathColor = isValidPath ? validPathColor : invalidPathColor;
+                movementLine.startColor = pathColor;
+                movementLine.endColor = pathColor;
                 movementLine.enabled = true;
             }
             else
@@ -98,6 +181,7 @@ namespace Dokkaebi.UI
 
         private void UpdateAbilityPreview(Vector2Int targetPos)
         {
+            selectedUnit = unitManager.GetSelectedUnit();
             if (selectedUnit == null || selectedAbility == null) return;
 
             ClearHighlights();
@@ -132,8 +216,9 @@ namespace Dokkaebi.UI
                     Vector2Int offset = new Vector2Int(x, y);
                     Vector2Int tilePos = center + offset;
 
-                    // Check if tile is within range
-                    if (Vector2Int.Distance(center, tilePos) <= range)
+                    // Check if tile is within range and grid bounds
+                    if (Vector2Int.Distance(center, tilePos) <= area &&
+                        GridManager.Instance.IsPositionValid(GridPosition.FromVector2Int(tilePos)))
                     {
                         affectedTiles.Add(tilePos);
                     }
@@ -145,8 +230,12 @@ namespace Dokkaebi.UI
 
         private bool IsValidTarget(Vector2Int targetPos, AbilityData ability)
         {
+            selectedUnit = unitManager.GetSelectedUnit();
+            if (selectedUnit == null) return false;
+
             // Check if target is within range
-            if (Vector2Int.Distance(selectedUnit.GetGridPosition().ToVector2Int(), targetPos) > ability.range)
+            float distance = Vector2.Distance(selectedUnit.GetGridPosition().ToVector2Int(), targetPos);
+            if (distance > ability.range)
             {
                 return false;
             }
@@ -179,7 +268,7 @@ namespace Dokkaebi.UI
             if (tileHighlightPrefab == null) return;
 
             GameObject highlight = Instantiate(tileHighlightPrefab, transform);
-            highlight.transform.position = GridManager.Instance.GridToWorld(GridPosition.FromVector2Int(gridPos)) + Vector3.up * highlightHeight;
+            highlight.transform.position = GridManager.Instance.GridToWorldPosition(GridPosition.FromVector2Int(gridPos)) + Vector3.up * highlightHeight;
 
             // Set material based on validity
             var renderer = highlight.GetComponent<Renderer>();
@@ -201,7 +290,6 @@ namespace Dokkaebi.UI
                 }
             }
             activeHighlights.Clear();
-            movementLine.enabled = false;
         }
     }
 } 

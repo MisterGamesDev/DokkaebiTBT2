@@ -9,6 +9,7 @@ using Dokkaebi.Units;
 using Dokkaebi.Grid;
 using Dokkaebi.Interfaces;
 using Dokkaebi.Common;
+using Dokkaebi.Utilities;
 
 namespace Dokkaebi.UI
 {
@@ -50,7 +51,7 @@ namespace Dokkaebi.UI
 
             if (gridManager == null || inputManager == null || turnSystem == null)
             {
-                Debug.LogError("Required managers not found in scene!");
+                SmartLogger.LogError("Required managers not found in scene!", LogCategory.UI, this);
                 return;
             }
 
@@ -98,7 +99,7 @@ namespace Dokkaebi.UI
         {
             // Handle command results here
             // For example, show success/failure messages
-            Debug.Log($"Command result: {success} - {message}");
+            SmartLogger.Log($"Command result: {success} - {message}", LogCategory.UI, this);
         }
 
         private void UpdateTurnPhaseUI(TurnPhase phase)
@@ -216,9 +217,9 @@ namespace Dokkaebi.UI
 
             if (currentHoverHighlight != null)
             {
-                // Convert Vector2Int to GridPosition for GridToWorld
-                GridPosition gridPos = DokkaebiGridConverter.Vector2IntToGrid(gridCoord);
-                Vector3 worldPos = gridManager.GridToWorld(gridPos);
+                // Convert Vector2Int to GridPosition for GridToWorldPosition
+                var gridPos = new GridPosition(gridCoord.x, gridCoord.y);
+                Vector3 worldPos = gridManager.GridToWorldPosition(gridPos);
                 currentHoverHighlight.transform.position = worldPos;
 
                 // Update color based on validity

@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
+using System.Diagnostics; // Add Conditional attribute support
+using Debug = UnityEngine.Debug; // Explicit Debug reference to avoid ambiguity
 
 namespace Dokkaebi.Utilities
 {
@@ -17,11 +19,19 @@ namespace Dokkaebi.Utilities
         Performance,
         Grid,
         Unit,
-        Game
+        Game,
+        StateSync,
+        UI,          // Added for UI-related logs
+        Network,     // Added for networking-related logs
+        Physics,     // Added for physics-related logs
+        Audio,       // Added for audio-related logs
+        Debug,       // Added for temporary debug logs that should be stripped in release
+        Pathfinding, // Added for pathfinding-related logs
+        Input        // Added for input-related logs
     }
 
     /// <summary>
-    /// Smart logging system with categorization and filtering capabilities
+    /// Smart logging system with categorization, filtering capabilities, and conditional compilation support
     /// </summary>
     public static class SmartLogger
     {
@@ -39,6 +49,11 @@ namespace Dokkaebi.Utilities
             {
                 enabledCategories[category] = true;
             }
+            
+            // Disable Debug category by default in non-development builds
+            #if !DEVELOPMENT_BUILD && !UNITY_EDITOR
+            enabledCategories[LogCategory.Debug] = false;
+            #endif
         }
 
         /// <summary>
@@ -69,47 +84,59 @@ namespace Dokkaebi.Utilities
         }
 
         /// <summary>
-        /// Log a message with a specific category
+        /// Log a message with a specific category and optional context object
         /// </summary>
-        public static void Log(string message, LogCategory category = LogCategory.General)
+        [Conditional("ENABLE_LOGGING")]
+        public static void Log(string message, LogCategory category = LogCategory.General, Object context = null)
         {
             if (!globallyEnabled || !enabledCategories.TryGetValue(category, out bool isEnabled) || !isEnabled)
                 return;
                 
-            Debug.Log($"[{category}] {message}");
+            Debug.Log($"[{category}] {message}", context);
         }
 
         /// <summary>
-        /// Log a warning with a specific category
+        /// Log a warning with a specific category and optional context object
         /// </summary>
-        public static void LogWarning(string message, LogCategory category = LogCategory.General)
+        [Conditional("ENABLE_LOGGING")]
+        public static void LogWarning(string message, LogCategory category = LogCategory.General, Object context = null)
         {
             if (!globallyEnabled || !enabledCategories.TryGetValue(category, out bool isEnabled) || !isEnabled)
                 return;
                 
-            Debug.LogWarning($"[{category}] {message}");
+            Debug.LogWarning($"[{category}] {message}", context);
         }
 
         /// <summary>
-        /// Log an error with a specific category
+        /// Log an error with a specific category and optional context object.
+        /// Note: Errors are not stripped in release builds by default for critical error tracking.
         /// </summary>
-        public static void LogError(string message, LogCategory category = LogCategory.General)
+        public static void LogError(string message, LogCategory category = LogCategory.General, Object context = null)
         {
             if (!globallyEnabled || !enabledCategories.TryGetValue(category, out bool isEnabled) || !isEnabled)
                 return;
                 
-            Debug.LogError($"[{category}] {message}");
+            Debug.LogError($"[{category}] {message}", context);
         }
 
         /// <summary>
         /// Log using a StringBuilder for efficient string operations
         /// </summary>
-        public static void LogWithBuilder(System.Text.StringBuilder builder, LogCategory category = LogCategory.General)
+        [Conditional("ENABLE_LOGGING")]
+        public static void LogWithBuilder(System.Text.StringBuilder builder, LogCategory category = LogCategory.General, Object context = null)
         {
             if (!globallyEnabled || !enabledCategories.TryGetValue(category, out bool isEnabled) || !isEnabled)
                 return;
                 
-            Debug.Log($"[{category}] {builder.ToString()}");
+            Debug.Log($"[{category}] {builder}", context);
+        }
+
+        /// <summary>
+        /// Formats an exception with its stack trace for logging
+        /// </summary>
+        public static string FormatException(System.Exception ex)
+        {
+            return $"{ex.GetType().Name}: {ex.Message}\nStack Trace:\n{ex.StackTrace}";
         }
     }
 }

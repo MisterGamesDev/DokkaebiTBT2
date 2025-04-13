@@ -1,5 +1,8 @@
 using System.Collections.Generic;
 using UnityEngine;
+using Dokkaebi.Common;
+using Dokkaebi.Core.Data;
+using System;
 
 namespace Dokkaebi.Interfaces
 {
@@ -10,6 +13,11 @@ namespace Dokkaebi.Interfaces
     /// </summary>
     public interface IDokkaebiUnit
     {
+        /// <summary>
+        /// Event fired when the unit moves to a new position
+        /// </summary>
+        event Action<IDokkaebiUnit, GridPosition, GridPosition> OnUnitMoved;
+
         /// <summary>
         /// The unique identifier for this unit
         /// </summary>
@@ -49,6 +57,11 @@ namespace Dokkaebi.Interfaces
         /// Current health points of the unit
         /// </summary>
         int CurrentHealth { get; }
+
+        /// <summary>
+        /// The display name of the unit
+        /// </summary>
+        string DisplayName { get; }
         
         /// <summary>
         /// Move the unit to a new grid position
@@ -70,5 +83,25 @@ namespace Dokkaebi.Interfaces
         /// Get all valid positions that the unit can move to
         /// </summary>
         List<GridPosition> GetValidMovePositions();
+
+        /// <summary>
+        /// Get all status effects currently applied to the unit
+        /// </summary>
+        List<IStatusEffectInstance> GetStatusEffects();
+
+        /// <summary>
+        /// Add a status effect to this unit
+        /// </summary>
+        void AddStatusEffect(IStatusEffectInstance effect);
+
+        /// <summary>
+        /// Remove a status effect from this unit
+        /// </summary>
+        void RemoveStatusEffect(IStatusEffectInstance effect);
+
+        /// <summary>
+        /// Check if this unit has a specific status effect
+        /// </summary>
+        bool HasStatusEffect(StatusEffectType effectType);
     }
 } 

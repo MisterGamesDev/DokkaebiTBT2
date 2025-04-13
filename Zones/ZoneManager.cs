@@ -21,6 +21,7 @@ namespace Dokkaebi.Zones
         [Header("References")]
         [SerializeField] private GridManager gridManager;
         [SerializeField] private Transform zonesParent;
+        [SerializeField] private DokkaebiTurnSystemCore turnSystem;
         
         [Header("Prefabs")]
         [SerializeField] private GameObject zoneInstancePrefab;
@@ -39,9 +40,6 @@ namespace Dokkaebi.Zones
         // Track all active zones
         private Dictionary<string, Zone> activeZones = new Dictionary<string, Zone>();
         
-        // Turn system reference
-        private Interfaces.ITurnSystem turnSystem;
-        
         private void Awake()
         {
             if (Instance == null)
@@ -56,7 +54,8 @@ namespace Dokkaebi.Zones
             
             if (zoneInstancePrefab == null)
             {
-                Debug.LogError("ZoneManager: Zone instance prefab not assigned!");
+                SmartLogger.LogError("ZoneManager: Zone instance prefab not assigned!", LogCategory.Zone, this);
+                return;
             }
             
             // Create zones parent if it doesn't exist
@@ -70,41 +69,46 @@ namespace Dokkaebi.Zones
             if (gridManager == null)
             {
                 gridManager = FindObjectOfType<GridManager>();
+                if (gridManager == null)
+                {
+                    SmartLogger.LogWarning("ZoneManager: GridManager reference not found!", LogCategory.Zone, this);
+                    return;
+                }
             }
         }
         
         private void Start()
         {
-            // Find GridManager if not assigned
-            if (gridManager == null)
+            // Check if turn system reference is assigned
+            if (turnSystem == null)
             {
-                gridManager = FindObjectOfType<GridManager>();
-                if (gridManager == null)
-                {
-                    Debug.LogWarning("ZoneManager: GridManager reference not found!");
-                }
-            }
-            
-            // Find turn system
-            var turnSystemObj = FindObjectOfType<MonoBehaviour>() as Interfaces.ITurnSystem;
-            if (turnSystemObj != null)
-            {
-                turnSystem = turnSystemObj;
-                turnSystem.OnTurnResolutionEnd += HandleTurnResolutionEnd;
-                SmartLogger.Log("ZoneManager subscribed to turn resolution end", LogCategory.Zone);
+                SmartLogger.LogWarning("ZoneManager: TurnSystem reference not assigned in inspector!", LogCategory.Zone);
             }
             else
             {
-                SmartLogger.LogWarning("ZoneManager: TurnSystem not found, zone effects may not be applied properly", LogCategory.Zone);
+                SmartLogger.Log("ZoneManager: TurnSystem reference found", LogCategory.Zone);
             }
         }
         
-        private void OnDestroy()
+        private void OnEnable()
         {
-            // Unsubscribe from turn resolution end event
+            if (turnSystem != null)
+            {
+                turnSystem.OnTurnResolutionEnd += HandleTurnResolutionEnd;
+                SmartLogger.Log("ZoneManager: Successfully subscribed to TurnResolutionEnd event", LogCategory.Zone);
+            }
+            else
+            {
+                SmartLogger.LogWarning("ZoneManager: TurnSystem reference is null in OnEnable, cannot subscribe to TurnResolutionEnd.", LogCategory.Zone);
+            }
+        }
+        
+        private void OnDisable()
+        {
             if (turnSystem != null)
             {
                 turnSystem.OnTurnResolutionEnd -= HandleTurnResolutionEnd;
+                SmartLogger.Log("ZoneManager: Unsubscribed from TurnResolutionEnd event", LogCategory.Zone);
             }
         }
         
@@ -113,6 +117,7 @@ namespace Dokkaebi.Zones
         /// </summary>
         private void HandleTurnResolutionEnd()
         {
+            SmartLogger.Log("ZoneManager: HandleTurnResolutionEnd triggered - Beginning zone effect processing", LogCategory.Zone);
             SmartLogger.Log("ZoneManager: Processing all zone effects at turn end", LogCategory.Zone);
             
             // Apply effects for all active zones and update durations
@@ -124,12 +129,30 @@ namespace Dokkaebi.Zones
         /// </summary>
         private void ProcessAllZoneEffectsAndDurations()
         {
+            SmartLogger.Log("ZoneManager: Beginning ProcessAllZoneEffectsAndDurations - Main effect processing function", LogCategory.Zone);
+            
             if (zonesByPosition == null || zonesByPosition.Count == 0)
             {
+                SmartLogger.Log("ZoneManager: No active zones to process", LogCategory.Zone);
                 return;
             }
             
             SmartLogger.Log($"Processing effects for {zonesByPosition.Count} zone positions", LogCategory.Zone);
+            
+            // Log the current state of unit positions
+            SmartLogger.Log("[ZoneManager] Unit Positions Dict BEFORE Zone FX:", LogCategory.Zone);
+            var currentUnitPositions = UnitManager.Instance.GetUnitPositionsReadOnly();
+            if (currentUnitPositions.Count == 0)
+            {
+                SmartLogger.Log("-- Dictionary is empty.", LogCategory.Zone);
+            }
+            else
+            {
+                foreach (var kvp in currentUnitPositions)
+                {
+                    SmartLogger.Log($"- Pos: {kvp.Key}, Unit: {kvp.Value?.GetUnitName() ?? "NULL"}", LogCategory.Zone);
+                }
+            }
             
             // Process all zones
             Dictionary<Interfaces.GridPosition, List<ZoneInstance>> zonesCopy = new Dictionary<Interfaces.GridPosition, List<ZoneInstance>>(zonesByPosition);
@@ -140,8 +163,40 @@ namespace Dokkaebi.Zones
                 {
                     if (zone != null && zone.IsActive)
                     {
-                        // Apply zone effects to units at this position
-                        zone.ApplyZoneEffects();
+                        // Check 3x3 area around the zone's position
+                        for (int xOffset = -1; xOffset <= 1; xOffset++)
+                        {
+                            for (int zOffset = -1; zOffset <= 1; zOffset++)
+                            {
+                                var currentTilePos = new Interfaces.GridPosition(
+                                    zone.Position.x + xOffset,
+                                    zone.Position.z + zOffset
+                                );
+
+                                // Check if the position is valid
+                                if (gridManager.IsPositionValid(currentTilePos))
+                                {
+                                    SmartLogger.Log($"-- Checking Tile: {currentTilePos}", LogCategory.Zone);
+                                    
+                                    // Get the unit at this position using UnitManager
+                                    var unitInArea = UnitManager.Instance?.GetUnitAtPosition(currentTilePos);
+                                    
+                                    SmartLogger.Log($"---- Found: {(unitInArea == null ? "NULL" : unitInArea.GetUnitName())}", LogCategory.Zone);
+                        
+                                    // Log which zone is applying effects and to which unit
+                                    if (unitInArea != null)
+                                    {
+                                        SmartLogger.Log($"Zone '{zone.DisplayName}' checking unit '{unitInArea.GetUnitName()}' at {currentTilePos}", LogCategory.Zone);
+                                        // Apply zone effects to the unit in the area
+                                        zone.ApplyZoneEffects(unitInArea);
+                                    }
+                                    else
+                                    {
+                                        SmartLogger.Log($"Zone '{zone.DisplayName}' at {currentTilePos} has no unit to affect", LogCategory.Zone);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 
@@ -182,34 +237,57 @@ namespace Dokkaebi.Zones
             // Check if position is valid
             if (!IsValidPosition(position))
             {
-                Debug.LogWarning($"ZoneManager: Cannot create zone at invalid position {position}");
+                SmartLogger.LogWarning($"ZoneManager: Cannot create zone at invalid position {position}", LogCategory.Zone, this);
                 return null;
             }
             
             // Check if the tile is in void space
             if (IsVoidSpace(position))
             {
-                Debug.LogWarning($"ZoneManager: Cannot create zone in void space at {position}");
+                SmartLogger.LogWarning($"ZoneManager: Cannot create zone in void space at {position}", LogCategory.Zone, this);
                 return null;
+            }
+
+            // Calculate adjusted position to keep zone within grid boundaries
+            int radius = zoneTypeData.Radius;
+            int gridWidth = gridManager.GetGridWidth();
+            int gridHeight = gridManager.GetGridHeight();
+
+            // Calculate the minimum and maximum valid center positions that keep the zone in bounds
+            int minValidX = radius;
+            int maxValidX = gridWidth - 1 - radius;
+            int minValidZ = radius;
+            int maxValidZ = gridHeight - 1 - radius;
+
+            // Clamp the target position to keep the zone in bounds
+            Interfaces.GridPosition adjustedPosition = new Interfaces.GridPosition(
+                Mathf.Clamp(position.x, minValidX, maxValidX),
+                Mathf.Clamp(position.z, minValidZ, maxValidZ)
+            );
+
+            // Log if position was adjusted
+            if (position != adjustedPosition)
+            {
+                SmartLogger.Log($"ZoneManager: Adjusted zone position from {position} to {adjustedPosition} to keep within bounds", LogCategory.Zone, this);
             }
             
             // Get or create the list of zones at this position
-            if (!zonesByPosition.TryGetValue(position, out var zonesAtPosition))
+            if (!zonesByPosition.TryGetValue(adjustedPosition, out var zonesAtPosition))
             {
                 zonesAtPosition = new List<ZoneInstance>();
-                zonesByPosition[position] = zonesAtPosition;
+                zonesByPosition[adjustedPosition] = zonesAtPosition;
             }
             
             // Check for unstable resonance (too many zones)
             if (zonesAtPosition.Count >= maxZonesPerTile)
             {
-                HandleUnstableResonance(position);
+                HandleUnstableResonance(adjustedPosition);
                 return null;
             }
             
             // Instantiate the zone instance
             GameObject zoneObject = Instantiate(zoneInstancePrefab, Vector3.zero, Quaternion.identity);
-            zoneObject.name = $"Zone_{zoneTypeData.DisplayName}_{position}";
+            zoneObject.name = $"Zone_{zoneTypeData.DisplayName}_{adjustedPosition}";
             
             // Get and initialize the zone instance component
             ZoneInstance zoneInstance = zoneObject.GetComponent<ZoneInstance>();
@@ -224,13 +302,16 @@ namespace Dokkaebi.Zones
             // Initialize the zone with the provided parameters
             zoneInstance.Initialize(
                 zoneTypeData,
-                position,
+                adjustedPosition,
                 ownerUnitId,
                 duration > 0 ? duration : zoneTypeData.DefaultDuration
             );
             
             // Add to the list of zones at this position
             zonesAtPosition.Add(zoneInstance);
+            
+            // Apply initial effects immediately after creation
+            zoneInstance.ApplyInitialEffects();
             
             return zoneInstance;
         }
@@ -272,12 +353,12 @@ namespace Dokkaebi.Zones
         /// </summary>
         private void HandleUnstableResonance(Interfaces.GridPosition position)
         {
-            Debug.Log($"Unstable Resonance triggered at {position}");
+            SmartLogger.Log($"Unstable Resonance triggered at {position}", LogCategory.Zone, this);
             
             // Create a volatile zone (damaging zone) for 1 turn
             if (volatileZonePrefab != null)
             {
-                GameObject volatileObj = Instantiate(volatileZonePrefab, DokkaebiGridConverter.GridToWorld(position), Quaternion.identity);
+                GameObject volatileObj = Instantiate(volatileZonePrefab, gridManager.GridToWorldPosition(position), Quaternion.identity);
                 volatileObj.name = $"VolatileZone_{position}";
                 
                 // TODO: Initialize volatile zone with appropriate effects
@@ -424,7 +505,7 @@ namespace Dokkaebi.Zones
             
             // Move the zone visually
             GameObject zoneObject = zone.gameObject;
-            zoneObject.transform.position = DokkaebiGridConverter.GridToWorld(newPosition);
+            zoneObject.transform.position = gridManager.GridToWorldPosition(newPosition);
             
             // Check for merging at new position
             CheckForZoneMerging(zone, zonesAtNewPos);

@@ -54,7 +54,7 @@ namespace Dokkaebi.UI
             // Update stacks
             if (stacksText != null)
             {
-                if (effectData.canStack && effectData.maxStacks > 1)
+                if (effectData.isStackable && effectData.maxStacks > 1)
                 {
                     stacksText.text = effectData.maxStacks.ToString();
                     stacksText.gameObject.SetActive(true);

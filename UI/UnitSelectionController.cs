@@ -6,336 +6,113 @@ using Dokkaebi.Common;
 using Dokkaebi.Units;
 using Dokkaebi.Utilities;
 using Dokkaebi.Grid;
+using Dokkaebi.Pathfinding;
+using Dokkaebi.Core.Data;
 
 namespace Dokkaebi.UI
 {
+    /// <summary>
+    /// Handles unit selection and targeting input
+    /// </summary>
     public class UnitSelectionController : MonoBehaviour, DokkaebiUpdateManager.IUpdateObserver
     {
         [Header("References")]
-        [SerializeField] private GameObject turnSystemObject;
-        [SerializeField] private GameObject cameraControllerObject;
-        [SerializeField] private GameObject abilityManagerObject;
-        
+        [SerializeField] private PlayerActionManager actionManager;
+        [SerializeField] private PreviewManager previewManager;
+        [SerializeField] private AbilitySelectionUI abilityUI;
+        [SerializeField] private GridManager gridManager;
+        [SerializeField] private UnitManager unitManager;
+        [SerializeField] private InputManager inputManager;
+        [SerializeField] private UnitInfoPanel unitInfoPanel;
+
         [Header("Selection Settings")]
+        [SerializeField] private float raycastDistance = 100f;
         [SerializeField] private LayerMask unitLayer;
         [SerializeField] private LayerMask groundLayer;
-        
+
         [Header("Visual Feedback")]
-        [SerializeField] private GameObject moveTargetPrefab;
-        [SerializeField] private GameObject selectionIndicatorPrefab;
-        [SerializeField] private GameObject abilityTargetPrefab;
-        [SerializeField] private Color validMoveColor = Color.green;
-        [SerializeField] private Color invalidMoveColor = Color.red;
-        [SerializeField] private Color abilityRangeColor = Color.blue;
-        
-        // References to core systems via interfaces
-        private ITurnSystem turnSystem;
-        private ICameraController cameraController;
-        private IAbilitySystem abilitySystem;
-        private InputManager inputManager;
-        private UnitManager unitManager;
-        
-        // Currently selected unit
-        private IDokkaebiUnit selectedUnit;
-        private GameObject selectionIndicator;
-        
-        // Valid movement visualization
+        [SerializeField] private GameObject moveTargetMarker;
+        [SerializeField] private GameObject abilityTargetMarker;
+        [SerializeField] private Material validMoveMaterial;
+        [SerializeField] private Material invalidMoveMaterial;
+        [SerializeField] private Material validAbilityTargetMaterial;
+        [SerializeField] private Material invalidAbilityTargetMaterial;
+
+        // State tracking
+        private bool isSelectingAbility;
+        private bool isTargetingAbility;
+        private AbilityData selectedAbility;
+        private HashSet<Interfaces.GridPosition> validAbilityTargets;
         private List<GameObject> moveTargetMarkers = new List<GameObject>();
-        private HashSet<GridPosition> validMovePositions = new HashSet<GridPosition>();
-        private bool showingMoveTargets = false;
-        
-        // Ability selection and targeting
-        private bool isSelectingAbility = false;
-        private bool isTargetingAbility = false;
-        private int selectedAbilityIndex = -1;
-        private IAbilityData selectedAbility;
-        private List<GameObject> abilityRangeIndicators = new List<GameObject>();
-        private HashSet<GridPosition> validAbilityTargets = new HashSet<GridPosition>();
-        
-        // Temporary grid position when hovering over terrain
-        private GridPosition hoverGridPosition;
-        private bool isHoveringValidMove = false;
-        private bool isHoveringValidAbilityTarget = false;
-        
+        private List<GameObject> abilityTargetMarkers = new List<GameObject>();
+        private DokkaebiUnit selectedUnit;
+
         private void Awake()
         {
-            // Get interface references from GameObjects
-            if (turnSystemObject != null)
+            // Get references if needed
+            if (actionManager == null) actionManager = FindObjectOfType<PlayerActionManager>();
+            if (previewManager == null) previewManager = FindObjectOfType<PreviewManager>();
+            if (abilityUI == null) abilityUI = FindObjectOfType<AbilitySelectionUI>();
+            if (gridManager == null) gridManager = FindObjectOfType<GridManager>();
+            if (unitManager == null) unitManager = FindObjectOfType<UnitManager>();
+            if (inputManager == null) inputManager = FindObjectOfType<InputManager>();
+
+            if (actionManager == null || previewManager == null || abilityUI == null || gridManager == null || unitManager == null || inputManager == null)
             {
-                turnSystem = turnSystemObject.GetComponent<ITurnSystem>();
+                SmartLogger.LogError("Required references not found!", LogCategory.General);
+                return;
             }
+
+            // Initialize state
+            isSelectingAbility = false;
+            isTargetingAbility = false;
+            validAbilityTargets = new HashSet<Interfaces.GridPosition>();
+
+            // Subscribe to events
+            actionManager.OnAbilityTargetingStarted += HandleAbilityTargetingStarted;
+            actionManager.OnAbilityTargetingCancelled += HandleAbilityTargetingCancelled;
+        }
+
+        private void OnEnable()
+        {
+            DokkaebiUpdateManager.Instance?.RegisterUpdateObserver(this);
             
-            if (cameraControllerObject != null)
+            // Subscribe to input manager events
+            if (inputManager != null)
             {
-                cameraController = cameraControllerObject.GetComponent<ICameraController>();
-            }
-            
-            if (abilityManagerObject != null)
-            {
-                abilitySystem = abilityManagerObject.GetComponent<IAbilitySystem>();
-            }
-            
-            // Find required managers
-            inputManager = InputManager.Instance;
-            unitManager = UnitManager.Instance;
-            
-            // Log warnings if interfaces/managers not found
-            if (turnSystem == null)
-            {
-                Debug.LogWarning("UnitSelectionController: No ITurnSystem interface found.");
-            }
-            
-            if (cameraController == null)
-            {
-                Debug.LogWarning("UnitSelectionController: No ICameraController interface found.");
-            }
-            
-            if (abilitySystem == null)
-            {
-                Debug.LogWarning("UnitSelectionController: No IAbilitySystem interface found.");
-            }
-            
-            if (inputManager == null)
-            {
-                Debug.LogError("UnitSelectionController: InputManager not found in scene!");
-            }
-            
-            if (unitManager == null)
-            {
-                Debug.LogError("UnitSelectionController: UnitManager not found in scene!");
+                inputManager.OnUnitSelected += HandleUnitSelected;
+                inputManager.OnUnitDeselected += HandleUnitDeselected;
+                inputManager.OnGridCoordHovered += HandleGridCoordHovered;
             }
         }
-        
-        private void Start()
+
+        private void OnDisable()
         {
-            // Register with update manager
-            DokkaebiUpdateManager.Instance.RegisterUpdateObserver(this);
+            DokkaebiUpdateManager.Instance?.UnregisterUpdateObserver(this);
             
-            // Create selection indicator but make it inactive initially
-            if (selectionIndicatorPrefab != null)
-            {
-                selectionIndicator = Instantiate(selectionIndicatorPrefab);
-                selectionIndicator.SetActive(false);
-            }
-            
-            // Subscribe to turn system events
-            if (turnSystem != null)
-            {
-                turnSystem.OnPhaseChanged += HandlePhaseChanged;
-            }
-        }
-        
-        private void OnDestroy()
-        {
-            // Unregister from update manager
-            if (DokkaebiUpdateManager.Instance != null)
-            {
-                DokkaebiUpdateManager.Instance.UnregisterUpdateObserver(this);
-            }
-            
-            // Unsubscribe from turn system events
-            if (turnSystem != null)
-            {
-                turnSystem.OnPhaseChanged -= HandlePhaseChanged;
-            }
-            
-            // Unsubscribe from input events
+            // Unsubscribe from input manager events
             if (inputManager != null)
             {
                 inputManager.OnUnitSelected -= HandleUnitSelected;
                 inputManager.OnUnitDeselected -= HandleUnitDeselected;
+                inputManager.OnGridCoordHovered -= HandleGridCoordHovered;
             }
-            
-            // Clean up move target markers
-            ClearMoveTargets();
-        }
 
-        private void OnEnable()
-{
-    Debug.Log("[UnitSelectionController] OnEnable called.");
-
-    // ADD THIS SPECIFIC LOG:
-    Debug.Log($"[UnitSelectionController] In OnEnable - Checking InputManager.Instance directly: {(InputManager.Instance != null)}");
-
-    // Your existing logic to get/check inputManager variable:
-    if (inputManager == null) inputManager = InputManager.Instance; // Ensure you try to get it if null
-
-    if (inputManager != null)
-    {
-         Debug.Log("[UnitSelectionController] Subscribing to inputManager events in OnEnable.");
-        inputManager.OnUnitSelected += HandleUnitSelected;
-        inputManager.OnUnitDeselected += HandleUnitDeselected;
-    } else {
-        Debug.LogError("[UnitSelectionController] Cannot subscribe in OnEnable, InputManager reference is null!");
-    }
-}
-
-private void OnDisable()
-{
-    Debug.Log("[UnitSelectionController] OnDisable called.");
-    // Unsubscribe from input events
-    if (inputManager != null)
-    {
-         Debug.Log("[UnitSelectionController] Unsubscribing from inputManager events in OnDisable.");
-        inputManager.OnUnitSelected -= HandleUnitSelected;
-        inputManager.OnUnitDeselected -= HandleUnitDeselected;
-    }
-}
-        
-        private void HandleUnitSelected(DokkaebiUnit unit)
-        {
-            Debug.Log($"[UnitSelectionController] HandleUnitSelected event received for unit: {(unit != null ? unit.GetUnitName() : "NULL")}");
-
-    if (unit == null /* || !unit.IsPlayer() */) // Check if unit is valid (add player check back if needed)
-    {
-        Debug.Log("[UnitSelectionController] Invalid unit received or not player unit. Deselecting.");
-        HandleUnitDeselected(); // Call deselect if unit is invalid
-        return;
-    }
-
-    // ADD THIS LOG:
-    Debug.Log($"[UnitSelectionController] Calling UnitManager.SetSelectedUnit for {unit.GetUnitName()}");
-    if(unitManager == null) Debug.LogError("[UnitSelectionController] UnitManager reference is NULL!"); // Add null check
-    else unitManager.SetSelectedUnit(unit); // Ensure this line is called
-            
-            // Update UnitManager's selected unit
-            unitManager.SetSelectedUnit(unit);
-            
-            // Store locally
-            selectedUnit = unit;
-            
-            // Show visual feedback
-            ShowSelectionIndicator(unit);
-            ShowMoveTargets();
-            
-            SmartLogger.Log($"Selected unit: {unit.GetUnitName()}", LogCategory.Unit);
-        }
-        
-        private void HandleUnitDeselected()
-        {
-            Debug.Log($"[UnitSelectionController] HandleUnitDeselected event received/called.");
-    if(unitManager == null) Debug.LogError("[UnitSelectionController] UnitManager reference is NULL!"); // Add null check
-    else unitManager.ClearSelectedUnit(); // Ensure this is called
-            // Clear UnitManager's selected unit
-            unitManager.ClearSelectedUnit();
-            
-            // Clear local reference
-            selectedUnit = null;
-            
-            // Hide visual feedback
-            HideSelectionIndicator();
+            // Clean up any remaining markers
             HideMoveTargets();
-            
-            SmartLogger.Log("Unit deselected", LogCategory.Unit);
+            HideAbilityTargets();
         }
-        
-        // Placeholder methods for visual feedback
-        private void ShowSelectionIndicator(IDokkaebiUnit unit)
+
+        private void OnDestroy()
         {
-            if (selectionIndicator == null || unit == null)
+            // Unsubscribe from events
+            if (actionManager != null)
             {
-                SmartLogger.LogWarning("Cannot show selection indicator - missing references", LogCategory.Unit);
-                return;
+                actionManager.OnAbilityTargetingStarted -= HandleAbilityTargetingStarted;
+                actionManager.OnAbilityTargetingCancelled -= HandleAbilityTargetingCancelled;
             }
-
-            var unitGameObject = unit.GameObject;
-            if (unitGameObject == null)
-            {
-                SmartLogger.LogWarning("Cannot show selection indicator - unit has no GameObject", LogCategory.Unit);
-                return;
-            }
-
-            // Position the indicator at the unit's position
-            selectionIndicator.transform.position = unitGameObject.transform.position;
-            
-            // Parent to the unit for automatic movement following
-            selectionIndicator.transform.SetParent(unitGameObject.transform, true);
-            
-            // Show the indicator
-            selectionIndicator.SetActive(true);
         }
-        
-        private void HideSelectionIndicator()
-        {
-            if (selectionIndicator == null)
-                return;
-                
-            // Unparent from any unit
-            selectionIndicator.transform.SetParent(null);
-            
-            // Hide the indicator
-            selectionIndicator.SetActive(false);
-        }
-        
-        private void ShowMoveTargets()
-        {
-            // Clear any existing markers first
-            HideMoveTargets();
 
-            // Validate requirements
-            if (selectedUnit == null || moveTargetPrefab == null)
-            {
-                SmartLogger.LogWarning("Cannot show move targets - missing unit or prefab", LogCategory.Movement);
-                return;
-            }
-
-            // Check if unit can move
-            if (!turnSystem.CanUnitMove(selectedUnit))
-            {
-                SmartLogger.LogWarning($"Unit {selectedUnit.GetUnitName()} cannot move at this time", LogCategory.Movement);
-                return;
-            }
-
-            // Get valid move positions
-            validMovePositions = new HashSet<GridPosition>(selectedUnit.GetValidMovePositions());
-
-            // Create markers for each valid position
-            foreach (var pos in validMovePositions)
-            {
-                // Get world position
-                Vector3 worldPos = GridManager.Instance.GridToWorld(pos);
-
-                // Instantiate marker
-                GameObject marker = Instantiate(moveTargetPrefab, worldPos, Quaternion.identity, transform);
-
-                // Set color
-                var renderer = marker.GetComponent<Renderer>();
-                if (renderer != null)
-                {
-                    renderer.material.color = validMoveColor;
-                }
-
-                // Add to list for cleanup
-                moveTargetMarkers.Add(marker);
-            }
-
-            showingMoveTargets = true;
-            SmartLogger.Log($"Showing {validMovePositions.Count} valid move positions for {selectedUnit.GetUnitName()}", LogCategory.Movement);
-        }
-        
-        private void HideMoveTargets()
-        {
-            // Destroy all markers
-            foreach (var marker in moveTargetMarkers)
-            {
-                if (marker != null)
-                {
-                    Destroy(marker);
-                }
-            }
-
-            // Clear collections
-            moveTargetMarkers.Clear();
-            validMovePositions.Clear();
-            showingMoveTargets = false;
-        }
-        
-        private void ClearMoveTargets()
-        {
-            HideMoveTargets();
-        }
-        
-        // Interface-based update method
         public void CustomUpdate(float deltaTime)
         {
             if (isTargetingAbility)
@@ -345,63 +122,318 @@ private void OnDisable()
             else
             {
                 HandleSelectionInput();
-                HandleMovementInput();
-                HandleAbilitySelectionInput();
-            }
-            
-            // Handle keyboard shortcuts
-            if (UnityEngine.Input.GetKeyDown(KeyCode.Space))
-            {
-                EndCurrentPhase();
-            }
-            
-            if (UnityEngine.Input.GetKeyDown(KeyCode.Escape))
-            {
-                if (isTargetingAbility)
-                {
-                    CancelAbilityTargeting();
-                }
-                else if (selectedUnit != null)
-                {
-                    HandleUnitDeselected();
-                }
             }
         }
-        
-        private void HandlePhaseChanged(TurnPhase newPhase)
-        {
-            // Handle phase changes based on interfaces
-            // Implementation depends on the events available in ITurnSystem
-        }
-        
+
         private void HandleSelectionInput()
         {
-            // Implementation using interfaces
+            if (Input.GetMouseButtonDown(0))
+            {
+                Ray ray = UnityEngine.Camera.main.ScreenPointToRay(Input.mousePosition);
+                RaycastHit hit;
+
+                // Check for unit hit
+                if (Physics.Raycast(ray, out hit, raycastDistance, unitLayer))
+                {
+                    var unit = hit.collider.GetComponent<DokkaebiUnit>();
+                    if (unit != null)
+                    {
+                        HandleUnitClick(unit);
+                    }
+                }
+                // Check for ground hit
+                else if (Physics.Raycast(ray, out hit, raycastDistance, groundLayer))
+                {
+                    var gridPos = gridManager.WorldToGridPosition(hit.point);
+                    HandleGroundClick(gridPos);
+                }
+            }
         }
-        
-        private void HandleMovementInput()
-        {
-            // Implementation using interfaces
-        }
-        
-        private void HandleAbilitySelectionInput()
-        {
-            // Implementation using interfaces
-        }
-        
-        private void EndCurrentPhase()
-        {
-            // Implementation using interfaces
-        }
-        
-        private void CancelAbilityTargeting()
-        {
-            // Implementation using interfaces
-        }
-        
+
         private void HandleAbilityTargetingInput()
         {
-            // Implementation will be added in a future task
+            if (Input.GetMouseButtonDown(0))
+            {
+                Ray ray = UnityEngine.Camera.main.ScreenPointToRay(Input.mousePosition);
+                RaycastHit hit;
+
+                // Check for unit hit
+                if (Physics.Raycast(ray, out hit, raycastDistance, unitLayer))
+                {
+                    var unit = hit.collider.GetComponent<DokkaebiUnit>();
+                    if (unit != null)
+                    {
+                        actionManager.HandleUnitClick(unit);
+                    }
+                }
+                // Check for ground hit
+                else if (Physics.Raycast(ray, out hit, raycastDistance, groundLayer))
+                {
+                    var gridPos = gridManager.WorldToGridPosition(hit.point);
+                    actionManager.HandleGroundClick(gridPos.ToVector2Int());
+                }
+            }
+            else if (Input.GetKeyDown(KeyCode.Escape))
+            {
+                actionManager.CancelAbilityTargeting();
+            }
+        }
+
+        private void HandleUnitClick(DokkaebiUnit unit)
+        {
+            SmartLogger.Log($"[UnitSelectionController] HandleUnitClick called for unit: {unit?.GetUnitName()}, isTargetingAbility: {isTargetingAbility}, Current PAM State: {actionManager?.GetCurrentActionState()}", LogCategory.Ability);
+
+            if (isTargetingAbility || (actionManager != null && actionManager.GetCurrentActionState() == PlayerActionManager.ActionState.SelectingAbilityTarget))
+            {
+                SmartLogger.Log($"[UnitSelectionController] In targeting mode, forwarding to actionManager. Stack trace:\n{System.Environment.StackTrace}", LogCategory.Ability);
+                actionManager.HandleUnitClick(unit);
+                return;
+            }
+
+            // Only handle unit selection if we're not in targeting mode and it's a player unit
+            if (unit != null && unit.IsPlayerControlled)
+            {
+                SmartLogger.Log($"[UnitSelectionController] Selecting player unit: {unit.GetUnitName()}", LogCategory.Ability);
+                SelectUnit(unit);
+            }
+        }
+
+        private void HandleGroundClick(Interfaces.GridPosition gridPos)
+        {
+            if (isTargetingAbility)
+            {
+                actionManager.HandleGroundClick(gridPos.ToVector2Int());
+            }
+        }
+
+        private void HandleUnitSelected(DokkaebiUnit unit)
+        {
+            SmartLogger.Log($"[UnitSelectionController] HandleUnitSelected called for unit: {unit?.GetUnitName()}, isTargetingAbility: {isTargetingAbility}", LogCategory.Ability);
+            
+            // Ignore unit selection events during ability targeting
+            if (isTargetingAbility)
+            {
+                SmartLogger.Log("[UnitSelectionController] Ignoring unit selection during ability targeting", LogCategory.Ability);
+                return;
+            }
+
+            if (unit != null && unit.IsPlayerControlled)
+            {
+                SelectUnit(unit);
+            }
+        }
+
+        private void HandleUnitDeselected()
+        {
+            // Debug.Log("[UnitSelectionController] Attempting to set selected unit to NULL in UnitManager via HandleUnitDeselected.");
+            unitManager.SetSelectedUnit(null);
+            selectedUnit = null;
+            HideMoveTargets();
+            HideAbilityTargets();
+
+            // Update UI
+            if (abilityUI != null)
+            {
+                abilityUI.SetUnit(null);
+            }
+            
+            // Clear unit info panel
+            if (unitInfoPanel != null)
+            {
+                unitInfoPanel.SetUnit(null);
+            }
+
+            SmartLogger.Log("Handled unit deselected", LogCategory.Unit);
+        }
+
+        private void HandleGridCoordHovered(Vector2Int? gridCoord)
+        {
+            if (previewManager == null) return;
+
+            if (gridCoord.HasValue)
+            {
+                // Update preview based on current mode (movement or ability targeting)
+                previewManager.UpdatePreview(gridCoord.Value);
+            }
+            else
+            {
+                // Clear preview when not hovering over grid
+                previewManager.UpdatePreview(new Vector2Int(-1, -1));
+            }
+        }
+
+        private void SelectUnit(DokkaebiUnit unit)
+        {
+            if (unit == null) return;
+
+            // Update selection state
+            selectedUnit = unit;
+            unitManager.SetSelectedUnit(unit);
+
+            // Update UI
+            if (abilityUI != null)
+            {
+                abilityUI.SetUnit(unit);
+            }
+            
+            // Update unit info panel
+            if (unitInfoPanel != null)
+            {
+                unitInfoPanel.SetUnit(unit);
+            }
+
+            // Show valid move targets
+            ShowMoveTargets();
+
+            SmartLogger.Log($"Selected unit: {unit.GetUnitName()}", LogCategory.Unit);
+        }
+
+        private void ShowMoveTargets()
+        {
+            HideMoveTargets();
+
+            if (selectedUnit == null || selectedUnit.GetComponent<DokkaebiMovementHandler>() == null)
+                return;
+
+            var movementHandler = selectedUnit.GetComponent<DokkaebiMovementHandler>();
+            var validMovePositions = movementHandler.GetValidMovePositions();
+
+            foreach (var pos in validMovePositions)
+            {
+                if (gridManager.IsValidGridPosition(pos))
+                {
+                    var marker = Instantiate(moveTargetMarker, gridManager.GridToWorldPosition(pos), Quaternion.identity);
+                    marker.GetComponent<Renderer>().material = validMoveMaterial;
+                    moveTargetMarkers.Add(marker);
+                }
+            }
+        }
+
+        private void HideMoveTargets()
+        {
+            // Clean up move target markers
+            foreach (var marker in moveTargetMarkers)
+            {
+                if (marker != null)
+                {
+                    Destroy(marker);
+                }
+            }
+            moveTargetMarkers.Clear();
+        }
+
+        private void HandleAbilityTargetingStarted(AbilityData ability)
+        {
+            SmartLogger.Log($"[UnitSelectionController] Ability targeting started: {ability?.displayName}", LogCategory.Ability);
+            isTargetingAbility = true;
+            selectedAbility = ability;
+            // Clear any existing selection visuals
+            HideMoveTargets();
+            // Show ability targeting visuals if needed
+            ShowAbilityTargets();
+        }
+
+        private void HandleAbilityTargetingCancelled()
+        {
+            SmartLogger.Log($"[UnitSelectionController] Ability targeting cancelled", LogCategory.Ability);
+            isTargetingAbility = false;
+            selectedAbility = null;
+            HideAbilityTargets();
+            // Restore selection visuals if needed
+            if (selectedUnit != null)
+            {
+                ShowMoveTargets();
+            }
+        }
+
+        private void ShowAbilityTargets()
+        {
+            if (selectedAbility == null) return;
+
+            var selectedUnit = unitManager.GetSelectedUnit();
+            if (selectedUnit == null) return;
+
+            // Clear any existing markers first
+            HideAbilityTargets();
+
+            // Get valid ability targets
+            validAbilityTargets = GetValidAbilityTargets(selectedUnit, selectedAbility);
+
+            // Show ability target markers
+            foreach (var pos in validAbilityTargets)
+            {
+                var worldPos = gridManager.GridToWorldPosition(pos);
+                var marker = Instantiate(abilityTargetMarker, worldPos, Quaternion.identity);
+                marker.GetComponent<Renderer>().material = validAbilityTargetMaterial;
+                abilityTargetMarkers.Add(marker);
+            }
+        }
+
+        private void HideAbilityTargets()
+        {
+            // Clean up ability target markers
+            foreach (var marker in abilityTargetMarkers)
+            {
+                if (marker != null)
+                {
+                    Destroy(marker);
+                }
+            }
+            abilityTargetMarkers.Clear();
+        }
+
+        private HashSet<Interfaces.GridPosition> GetValidAbilityTargets(DokkaebiUnit unit, AbilityData ability)
+        {
+            var validTargets = new HashSet<Interfaces.GridPosition>();
+            var currentPos = unit.GetGridPosition();
+            var range = ability.range;
+
+            // Get all positions within ability range
+            for (int x = -range; x <= range; x++)
+            {
+                for (int z = -range; z <= range; z++)
+                {
+                    var pos = new Interfaces.GridPosition(currentPos.x + x, currentPos.z + z);
+                    if (!gridManager.IsValidGridPosition(pos)) continue;
+
+                    // Check if position is valid based on ability targeting rules
+                    bool isValid = false;
+
+                    // Check ground targeting
+                    if (ability.targetsGround)
+                    {
+                        isValid = true;
+                    }
+
+                    // Check unit targeting
+                    var unitsAtPos = unitManager.GetUnitsAtPosition(pos.ToVector2Int());
+                    foreach (var targetUnit in unitsAtPos)
+                    {
+                        if (ability.targetsSelf && targetUnit == unit)
+                        {
+                            isValid = true;
+                            break;
+                        }
+                        if (ability.targetsAlly && targetUnit.IsPlayerControlled == unit.IsPlayerControlled)
+                        {
+                            isValid = true;
+                            break;
+                        }
+                        if (ability.targetsEnemy && targetUnit.IsPlayerControlled != unit.IsPlayerControlled)
+                        {
+                            isValid = true;
+                            break;
+                        }
+                    }
+
+                    if (isValid)
+                    {
+                        validTargets.Add(pos);
+                    }
+                }
+            }
+
+            return validTargets;
         }
     }
 }

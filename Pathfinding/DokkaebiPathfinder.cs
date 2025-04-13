@@ -1,237 +1,156 @@
 using UnityEngine;
 using System.Collections.Generic;
 using Pathfinding;
-using Dokkaebi.Common;
+using Dokkaebi.Grid;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Common;
+using Dokkaebi.Utilities;
 
 namespace Dokkaebi.Pathfinding
 {
     /// <summary>
-    /// Implementation of IPathfinder using the A* Pathfinding Project
+    /// Handles pathfinding operations using the A* Pathfinding Project
     /// </summary>
-    public class DokkaebiPathfinder : MonoBehaviour, IPathfinder
+    [RequireComponent(typeof(Seeker))]
+    public class DokkaebiPathfinder : MonoBehaviour
     {
-        private static DokkaebiPathfinder instance;
-        public static DokkaebiPathfinder Instance => instance;
-
-        private AstarPath astarPath;
+        private Seeker seeker;
         private IGridSystem gridSystem;
         private IPathfindingGridInfo gridInfo;
+        private IDokkaebiUnit unit;
 
         private void Awake()
         {
-            if (instance != null && instance != this)
+            // Get required components
+            seeker = GetComponent<Seeker>();
+            if (seeker == null)
             {
-                Destroy(gameObject);
+                SmartLogger.LogError("[DokkaebiPathfinder] No Seeker component found. Pathfinding will not work properly.", LogCategory.Pathfinding, this);
+                enabled = false;
                 return;
             }
 
-            instance = this;
-            DontDestroyOnLoad(gameObject);
-
-            // Get or create the AstarPath component
-            astarPath = GetComponent<AstarPath>();
-            if (astarPath == null)
+            // Get the unit component
+            unit = GetComponent<IDokkaebiUnit>();
+            if (unit == null)
             {
-                astarPath = FindObjectOfType<AstarPath>();
-                if (astarPath == null)
-                {
-                    Debug.LogWarning("No AstarPath component found. Pathfinding will not work properly.");
-                }
+                SmartLogger.LogError("[DokkaebiPathfinder] No IDokkaebiUnit implementation found on this GameObject.", LogCategory.Pathfinding, this);
+                enabled = false;
+                return;
             }
-        }
 
-        private void Start()
-        {
-            // Find and cache the IGridSystem using MonoBehaviours
-            MonoBehaviour[] allMonoBehaviours = FindObjectsOfType<MonoBehaviour>();
-            
-            // Find IGridSystem implementation
-            gridSystem = null;
-            foreach (var behaviour in allMonoBehaviours)
+            // Get GridManager singleton instance
+            GridManager gmInstance = GridManager.Instance;
+            if (gmInstance == null)
             {
-                gridSystem = behaviour as IGridSystem;
-                if (gridSystem != null)
-                    break;
+                SmartLogger.LogError("[DokkaebiPathfinder] Could not find GridManager.Instance in the scene. Ensure GridManager exists and is properly initialized.", LogCategory.Pathfinding, this);
+                enabled = false;
+                return;
             }
-            
+
+            // Cast singleton to required interfaces
+            gridSystem = gmInstance as IGridSystem;
+            gridInfo = gmInstance as IPathfindingGridInfo;
+
             if (gridSystem == null)
             {
-                Debug.LogError("DokkaebiPathfinder: No IGridSystem implementation found in the scene.");
+                SmartLogger.LogError("[DokkaebiPathfinder] GridManager.Instance does not implement IGridSystem.", LogCategory.Pathfinding, this);
+                enabled = false;
+                return;
             }
-            
-            // Find IPathfindingGridInfo implementation
-            gridInfo = null;
-            foreach (var behaviour in allMonoBehaviours)
-            {
-                gridInfo = behaviour as IPathfindingGridInfo;
-                if (gridInfo != null)
-                    break;
-            }
-            
+
             if (gridInfo == null)
             {
-                Debug.LogError("DokkaebiPathfinder: No IPathfindingGridInfo implementation found in the scene.");
+                SmartLogger.LogError("[DokkaebiPathfinder] GridManager.Instance does not implement IPathfindingGridInfo.", LogCategory.Pathfinding, this);
+                enabled = false;
+                return;
             }
+
+            SmartLogger.Log("[DokkaebiPathfinder] Successfully initialized with all dependencies.", LogCategory.Pathfinding, this);
         }
 
         /// <summary>
-        /// Check if a path exists between two grid positions
+        /// Get all walkable positions within the unit's movement range
         /// </summary>
-        public bool PathExists(Interfaces.GridPosition start, Interfaces.GridPosition end)
+        public List<GridPosition> GetWalkablePositionsInRange()
         {
-            // Convert to Grid.GridPosition for internal use
-            Vector2Int startPos = new Vector2Int(start.x, start.z);
-            Vector2Int endPos = new Vector2Int(end.x, end.z);
-
-            // Check if both positions are walkable using IPathfindingGridInfo
-            if (!gridInfo.IsWalkable(startPos) || !gridInfo.IsWalkable(endPos))
+            if (gridSystem == null || gridInfo == null || unit == null)
             {
-                return false;
+                SmartLogger.LogError("GetWalkablePositionsInRange: Missing dependencies", LogCategory.Pathfinding, this);
+                return new List<GridPosition>();
             }
 
-            // Convert to A* nodes
-            GraphNode startNode = NodeFromGridPosition(startPos);
-            GraphNode endNode = NodeFromGridPosition(endPos);
+            var validPositions = new List<GridPosition>();
+            var startPos = unit.CurrentGridPosition;
+            var movementRange = unit.MovementRange;
 
-            if (startNode == null || endNode == null)
-                return false;
-
-            // Check path existence
-            return PathUtilities.IsPathPossible(startNode, endNode);
-        }
-
-        // Helper method to get A* GraphNode from Vector2Int grid position
-        private GraphNode NodeFromGridPosition(Vector2Int gridPos)
-        {
-            // Convert grid position to world position
-            Vector3 worldPos = gridSystem.GridToWorldPosition(new Interfaces.GridPosition(gridPos.x, gridPos.y));
-            
-            // Get the nearest node from the graph
-            NNInfo info = AstarPath.active.GetNearest(worldPos);
-            return info.node;
-        }
-
-        /// <summary>
-        /// Check if a position is walkable
-        /// </summary>
-        public bool IsWalkable(Interfaces.GridPosition position)
-        {
-            return gridInfo.IsWalkable(new Vector2Int(position.x, position.z));
-        }
-
-        /// <summary>
-        /// Find all walkable positions within a certain range
-        /// </summary>
-        public List<Interfaces.GridPosition> GetWalkablePositionsInRange(Interfaces.GridPosition start, int range)
-        {
-            List<Interfaces.GridPosition> result = new List<Interfaces.GridPosition>();
-            
-            if (gridSystem == null || gridInfo == null)
+            // Get all positions within range
+            for (int x = -movementRange; x <= movementRange; x++)
             {
-                Debug.LogError("GetWalkablePositionsInRange: Missing dependencies");
-                return result;
-            }
-            
-            // Get initial walkable position
-            Vector2Int startPosV2 = new Vector2Int(start.x, start.z);
-            
-            // Create a queue for breadth-first search
-            Queue<Vector2Int> queue = new Queue<Vector2Int>();
-            HashSet<Vector2Int> visited = new HashSet<Vector2Int>();
-            
-            queue.Enqueue(startPosV2);
-            visited.Add(startPosV2);
-            
-            // Dictionary to track distance from start
-            Dictionary<Vector2Int, int> distances = new Dictionary<Vector2Int, int>();
-            distances[startPosV2] = 0;
-            
-            while (queue.Count > 0)
-            {
-                Vector2Int current = queue.Dequeue();
-                int currentDistance = distances[current];
-                
-                // Add to result
-                result.Add(new Interfaces.GridPosition(current.x, current.y));
-                
-                // Stop expanding if we've reached our range
-                if (currentDistance >= range)
-                    continue;
-                
-                // Get neighbors using IPathfindingGridInfo
-                foreach (Vector2Int neighbor in gridInfo.GetWalkableNeighbours(current))
+                for (int z = -movementRange; z <= movementRange; z++)
                 {
-                    if (!visited.Contains(neighbor))
+                    var checkPos = new GridPosition(startPos.x + x, startPos.z + z);
+
+                    // Skip if position is out of grid bounds
+                    if (!gridSystem.IsValidGridPosition(checkPos))
+                        continue;
+
+                    // Skip if position is not walkable
+                    if (!gridInfo.IsWalkable(checkPos, unit))
+                        continue;
+
+                    // Skip if position is too far (using Manhattan distance for now)
+                    int distance = Mathf.Abs(x) + Mathf.Abs(z);
+                    if (distance > movementRange)
+                        continue;
+
+                    // Check if we can actually reach this position
+                    if (CanReachPosition(checkPos))
                     {
-                        queue.Enqueue(neighbor);
-                        visited.Add(neighbor);
-                        distances[neighbor] = currentDistance + 1;
+                        validPositions.Add(checkPos);
                     }
                 }
             }
-            
-            return result;
+
+            return validPositions;
         }
 
         /// <summary>
-        /// Get the path between two grid positions
+        /// Check if a position can be reached within the unit's movement range
         /// </summary>
-        public List<Interfaces.GridPosition> GetPath(Interfaces.GridPosition start, Interfaces.GridPosition end)
+        private bool CanReachPosition(GridPosition targetPos)
         {
-            List<Interfaces.GridPosition> path = new List<Interfaces.GridPosition>();
-            
             if (gridSystem == null || gridInfo == null)
-            {
-                Debug.LogError("GetPath: Missing dependencies");
-                return path;
-            }
+                return false;
 
-            // Convert start/end positions to Vector2Int for IPathfindingGridInfo
-            Vector2Int startPosV2 = new Vector2Int(start.x, start.z);
-            Vector2Int endPosV2 = new Vector2Int(end.x, end.z);
-            
-            // Check walkability
-            if (!gridInfo.IsWalkable(startPosV2) || !gridInfo.IsWalkable(endPosV2))
-            {
-                return path;
-            }
-
-            // Convert to world positions using IGridSystem for A* integration
-            Vector3 startPos = gridSystem.GridToWorldPosition(start);
-            Vector3 endPos = gridSystem.GridToWorldPosition(end);
-
-            // Use A* to get path
-            ABPath abPath = ABPath.Construct(startPos, endPos);
-            AstarPath.StartPath(abPath);
-            abPath.BlockUntilCalculated();
-
-            // Convert waypoints to grid positions
-            if (abPath.error || abPath.vectorPath.Count == 0)
-                return path;
-
-            foreach (var point in abPath.vectorPath)
-            {
-                Interfaces.GridPosition gridPos = gridSystem.WorldToGridPosition(point);
-                
-                // Avoid duplicates
-                if (path.Count == 0 || !path[path.Count - 1].Equals(gridPos))
-                {
-                    path.Add(gridPos);
-                }
-            }
-
-            return path;
+            // For now, just check if the position is walkable and within range
+            // In the future, we might want to do actual pathfinding here
+            return gridInfo.IsWalkable(targetPos, unit);
         }
 
         /// <summary>
-        /// Get the distance between two grid positions considering pathfinding
+        /// Get a path to the target position
         /// </summary>
-        public int GetPathDistance(Interfaces.GridPosition start, Interfaces.GridPosition end)
+        public void GetPath(GridPosition targetPos, System.Action<Path> callback)
         {
-            var path = GetPath(start, end);
-            // Return -1 if no path exists, otherwise return path length - 1 (number of moves needed)
-            return path.Count == 0 ? -1 : path.Count - 1;
+            if (seeker == null || gridSystem == null || gridInfo == null)
+            {
+                SmartLogger.LogError("GetPath: Missing dependencies", LogCategory.Pathfinding, this);
+                return;
+            }
+
+            Vector3 startPos = transform.position;
+            Vector3 endPos = gridSystem.GridToWorldPosition(targetPos);
+
+            // Start pathfinding
+            seeker.StartPath(startPos, endPos, (Path p) =>
+            {
+                if (p.error)
+                {
+                    SmartLogger.LogError($"Path calculation failed: {p.errorLog}", LogCategory.Pathfinding, this);
+                }
+                callback?.Invoke(p);
+            });
         }
     }
 } 

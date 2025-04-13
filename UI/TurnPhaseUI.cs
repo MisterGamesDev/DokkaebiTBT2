@@ -4,6 +4,7 @@ using TMPro;
 using Dokkaebi.Core;
 using Dokkaebi.Common;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Utilities;
 
 namespace Dokkaebi.UI
 {
@@ -27,7 +28,7 @@ namespace Dokkaebi.UI
             turnSystem = FindObjectOfType<DokkaebiTurnSystemCore>();
             if (turnSystem == null)
             {
-                Debug.LogError("TurnPhaseUI: Could not find ITurnSystem implementation!");
+                SmartLogger.LogError("TurnPhaseUI: TurnSystem not found in scene!", LogCategory.UI, this);
             }
         }
 
@@ -35,9 +36,35 @@ namespace Dokkaebi.UI
         {
             if (turnSystem != null)
             {
+                SmartLogger.Log("[TurnPhaseUI] Subscribing to turn system events", LogCategory.TurnSystem);
                 turnSystem.OnPhaseChanged += HandlePhaseStart;
                 turnSystem.OnTurnChanged += HandleTurnStart;
                 turnSystem.OnActivePlayerChanged += HandleActivePlayerChanged;
+            }
+        }
+
+        private void Start()
+        {
+            // Display initial state when UI becomes active
+            if (turnSystem != null)
+            {
+                // Get initial state from turn system
+                TurnPhase initialPhase = turnSystem.CurrentPhase;
+                int initialTurn = turnSystem.CurrentTurn;
+                int initialActivePlayer = turnSystem.ActivePlayerId;
+
+                // Update UI with initial state
+                HandlePhaseStart(initialPhase);
+                HandleTurnStart(initialTurn);
+                HandleActivePlayerChanged(initialActivePlayer);
+            }
+        }
+
+        private void Update()
+        {
+            if (turnSystem != null)
+            {
+                UpdatePhaseTimer(turnSystem.GetRemainingPhaseTime());
             }
         }
 
@@ -45,6 +72,7 @@ namespace Dokkaebi.UI
         {
             if (turnSystem != null)
             {
+                SmartLogger.Log("[TurnPhaseUI] Unsubscribing from turn system events", LogCategory.TurnSystem);
                 turnSystem.OnPhaseChanged -= HandlePhaseStart;
                 turnSystem.OnTurnChanged -= HandleTurnStart;
                 turnSystem.OnActivePlayerChanged -= HandleActivePlayerChanged;
@@ -64,6 +92,7 @@ namespace Dokkaebi.UI
 
         private void HandleActivePlayerChanged(int playerId)
         {
+            SmartLogger.Log($"[TurnPhaseUI] HandleActivePlayerChanged called with playerId: {playerId}", LogCategory.TurnSystem);
             UpdateTurnDisplay(turnSystem.CurrentTurn, playerId);
         }
 
@@ -77,6 +106,8 @@ namespace Dokkaebi.UI
 
         private void UpdateTurnDisplay(int turnNumber, int activePlayerNumber)
         {
+            SmartLogger.Log($"[TurnPhaseUI] UpdateTurnDisplay called. Phase: {turnSystem?.CurrentPhase}, Received activePlayerNumber: {activePlayerNumber}", LogCategory.TurnSystem);
+            
             if (turnNumberText != null)
             {
                 turnNumberText.text = $"Turn {turnNumber}";

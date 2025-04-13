@@ -22,6 +22,11 @@ namespace Dokkaebi.Interfaces
         /// Size of a cell in world units
         /// </summary>
         float CellSize { get; }
+
+        /// <summary>
+        /// The world-space position corresponding to grid position (0, 0)
+        /// </summary>
+        Vector3 GridOrigin { get; }
         
         /// <summary>
         /// Convert a grid position to a world position

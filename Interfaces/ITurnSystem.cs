@@ -55,6 +55,11 @@ namespace Dokkaebi.Interfaces
         bool IsPhaseAdvancementLocked();
 
         /// <summary>
+        /// Gets the remaining time in the current phase
+        /// </summary>
+        float GetRemainingPhaseTime();
+
+        /// <summary>
         /// Check if a unit can move in the current phase
         /// </summary>
         bool CanUnitMove(IDokkaebiUnit unit);

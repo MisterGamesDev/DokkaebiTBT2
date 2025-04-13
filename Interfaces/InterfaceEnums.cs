@@ -14,46 +14,4 @@ namespace Dokkaebi.Interfaces
         Reaction,
         Special
     }
-
-    /// <summary>
-    /// Types of status effects
-    /// </summary>
-    public enum StatusEffectType
-    {
-        None,
-        Stun,
-        Root,
-        Silence,
-        Blind,
-        Invulnerable,
-        DamageBoost,
-        SpeedBoost,
-        Poison,
-        Burn,
-        Shield,
-        Invisible
-    }
-
-    /// <summary>
-    /// Types of damage that can be applied to units
-    /// </summary>
-    public enum DamageType
-    {
-        Normal,
-        Physical,
-        Magical,
-        True,
-        Fire,
-        Ice,
-        Water,
-        Earth,
-        Air,
-        Light,
-        Shadow,
-        Chaos,
-        Poison,
-        Electric,
-        Lightning,
-        Healing
-    }
-} 
+}

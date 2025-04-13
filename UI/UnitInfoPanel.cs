@@ -5,6 +5,9 @@ using System;
 using System.Collections.Generic;
 using Dokkaebi.Interfaces;
 using Dokkaebi.Common;
+using Dokkaebi.Units;
+using Dokkaebi.Core;
+using Dokkaebi.Utilities;
 
 namespace Dokkaebi.UI
 {
@@ -18,8 +21,8 @@ namespace Dokkaebi.UI
         [Header("Stats")]
         [SerializeField] private Slider hpSlider;
         [SerializeField] private TextMeshProUGUI hpText;
-        [SerializeField] private Slider mpSlider;
-        [SerializeField] private TextMeshProUGUI mpText;
+        [SerializeField] private Slider auraSlider;
+        [SerializeField] private TextMeshProUGUI auraText;
 
         [Header("Status Effects")]
         [SerializeField] private Transform statusEffectContainer;
@@ -27,36 +30,110 @@ namespace Dokkaebi.UI
 
         private IDokkaebiUnit currentUnit;
         private Dictionary<StatusEffectType, GameObject> activeStatusEffects = new Dictionary<StatusEffectType, GameObject>();
+        private bool isInitialized = false;
+
+        private void Start()
+        {
+            SmartLogger.Log("[UnitInfoPanel Start] Initializing panel...", LogCategory.UI, this);
+            gameObject.SetActive(false);
+            currentUnit = null;
+            ClearAllDisplays();
+            InitializeComponents();
+            isInitialized = true;
+            SmartLogger.Log($"[UnitInfoPanel Start] Panel initialized. activeSelf: {gameObject.activeSelf}", LogCategory.UI, this);
+        }
 
         private void OnEnable()
         {
+            SmartLogger.Log("[UnitInfoPanel OnEnable] Panel enabled", LogCategory.UI, this);
             if (currentUnit != null)
             {
+                SmartLogger.Log($"[UnitInfoPanel OnEnable] Refreshing display for unit: {currentUnit.GetUnitName()}", LogCategory.UI, this);
                 SubscribeToUnitEvents(currentUnit);
+                UpdateAllInfo(); // Refresh display when panel becomes visible
             }
         }
 
         private void OnDisable()
         {
+            SmartLogger.Log("[UnitInfoPanel OnDisable] Panel disabled", LogCategory.UI, this);
             if (currentUnit != null)
             {
+                SmartLogger.Log($"[UnitInfoPanel OnDisable] Unsubscribing from events for unit: {currentUnit.GetUnitName()}", LogCategory.UI, this);
                 UnsubscribeFromUnitEvents(currentUnit);
             }
         }
 
         public void SetUnit(IDokkaebiUnit unit)
         {
+            SmartLogger.Log($"[UnitInfoPanel SetUnit ENTRY] Called with unit: {(unit != null ? unit.GetUnitName() : "NULL")}. Panel currently activeSelf: {gameObject.activeSelf}", LogCategory.UI, this);
+
+            // If we're setting to the same unit, no need to do anything
+            if (currentUnit == unit)
+            {
+                SmartLogger.Log("[UnitInfoPanel SetUnit] Same unit, returning early", LogCategory.UI, this);
+                return;
+            }
+
+            // Unsubscribe from current unit's events if there is one
             if (currentUnit != null)
             {
+                SmartLogger.Log($"[UnitInfoPanel SetUnit] Unsubscribing from current unit: {currentUnit.GetUnitName()}", LogCategory.UI, this);
                 UnsubscribeFromUnitEvents(currentUnit);
             }
 
+            // Update current unit reference before anything else
             currentUnit = unit;
+            SmartLogger.Log($"[UnitInfoPanel SetUnit] Updated currentUnit reference to: {(currentUnit != null ? currentUnit.GetUnitName() : "NULL")}", LogCategory.UI, this);
+            
             if (currentUnit != null)
             {
+                // First update all information while panel might still be hidden
+                SmartLogger.Log("[UnitInfoPanel SetUnit] Setting up new unit...", LogCategory.UI, this);
                 SubscribeToUnitEvents(currentUnit);
                 UpdateAllInfo();
+                
+                // Then show the panel
+                SmartLogger.Log($"[UnitInfoPanel SetUnit] Preparing to set panel ACTIVE for '{currentUnit.GetUnitName()}'", LogCategory.UI, this);
+                gameObject.SetActive(true);
+                SmartLogger.Log($"[UnitInfoPanel SetUnit] Panel activeSelf is now: {gameObject.activeSelf}", LogCategory.UI, this);
             }
+            else
+            {
+                // Clear and hide the panel
+                SmartLogger.Log("[UnitInfoPanel SetUnit] Clearing and hiding panel...", LogCategory.UI, this);
+                ClearAllDisplays();
+                SmartLogger.Log("[UnitInfoPanel SetUnit] Preparing to set panel INACTIVE", LogCategory.UI, this);
+                gameObject.SetActive(false);
+                SmartLogger.Log($"[UnitInfoPanel SetUnit] Panel activeSelf is now: {gameObject.activeSelf}", LogCategory.UI, this);
+            }
+        }
+
+        private void InitializeComponents()
+        {
+            // Verify all required components are assigned
+            if (unitNameText == null || originText == null || callingText == null || 
+                hpText == null || auraText == null || hpSlider == null || auraSlider == null)
+            {
+                SmartLogger.LogError("One or more required UI components are not assigned!", LogCategory.UI, this);
+            }
+
+            if (statusEffectContainer == null || statusEffectPrefab == null)
+            {
+                SmartLogger.LogError("Status effect display components are not assigned!", LogCategory.UI, this);
+            }
+        }
+
+        private void ClearAllDisplays()
+        {
+            ClearStatusEffects();
+            if (unitNameText != null) unitNameText.text = "";
+            if (originText != null) originText.text = "";
+            if (callingText != null) callingText.text = "";
+            if (hpText != null) hpText.text = "0/0";
+            if (auraText != null) auraText.text = "0/0";
+            if (hpSlider != null) hpSlider.value = 0;
+            if (auraSlider != null) auraSlider.value = 0;
         }
 
         private void SubscribeToUnitEvents(IDokkaebiUnit unit)
@@ -67,6 +144,12 @@ namespace Dokkaebi.UI
                 eventHandler.OnHealingReceived += HandleHealingReceived;
                 eventHandler.OnStatusEffectApplied += HandleStatusEffectApplied;
                 eventHandler.OnStatusEffectRemoved += HandleStatusEffectRemoved;
+                
+                // Subscribe to unit-specific Aura changes
+                if (unit is DokkaebiUnit dokkaebiUnit)
+                {
+                    dokkaebiUnit.OnUnitAuraChanged += HandleUnitAuraChanged;
+                }
             }
         }
 
@@ -78,12 +161,26 @@ namespace Dokkaebi.UI
                 eventHandler.OnHealingReceived -= HandleHealingReceived;
                 eventHandler.OnStatusEffectApplied -= HandleStatusEffectApplied;
                 eventHandler.OnStatusEffectRemoved -= HandleStatusEffectRemoved;
+                
+                // Unsubscribe from unit-specific Aura changes
+                if (unit is DokkaebiUnit dokkaebiUnit)
+                {
+                    dokkaebiUnit.OnUnitAuraChanged -= HandleUnitAuraChanged;
+                }
             }
         }
 
         private void UpdateAllInfo()
         {
-            if (currentUnit == null) return;
+            if (!isInitialized) return;
+
+            if (currentUnit == null)
+            {
+                SmartLogger.LogWarning("[UnitInfoPanel UpdateAllInfo] Called with null currentUnit!", LogCategory.UI, this);
+                return;
+            }
+
+            SmartLogger.Log($"[UnitInfoPanel UpdateAllInfo] Updating display for unit: {currentUnit.GetUnitName()}", LogCategory.UI, this);
 
             // Update basic info
             if (unitNameText != null)
@@ -91,29 +188,43 @@ namespace Dokkaebi.UI
                 unitNameText.text = currentUnit.GetUnitName();
             }
 
-            if (originText != null)
+            // Try to get Origin/Calling data if available
+            if (currentUnit is DokkaebiUnit concreteUnit)
             {
-                originText.text = "Unknown"; // Origin info not available through interface
-            }
+                if (originText != null)
+                {
+                    originText.text = concreteUnit.GetOrigin()?.displayName ?? "Unknown";
+                }
+                if (callingText != null)
+                {
+                    callingText.text = concreteUnit.GetCalling()?.displayName ?? "Unknown";
+                }
 
-            if (callingText != null)
-            {
-                callingText.text = "Unknown"; // Calling info not available through interface
-            }
-
-            // Update stats
-            UpdateHPDisplay(currentUnit.CurrentHealth, currentUnit.CurrentHealth); // IDokkaebiUnit only has CurrentHealth
-
-            if (currentUnit is IExtendedDokkaebiUnit extendedUnit)
-            {
-                UpdateMPDisplay((int)extendedUnit.CurrentMP, (int)extendedUnit.MaxMP);
+                // Update HP with MaxHealth from concrete unit
+                UpdateHPDisplay(currentUnit.CurrentHealth, concreteUnit.MaxHealth);
+                
+                // Update unit-specific Aura
+                UpdateAuraDisplay(concreteUnit.GetCurrentUnitAura(), concreteUnit.GetMaxUnitAura());
                 
                 // Update status effects
                 ClearStatusEffects();
-                foreach (var effect in extendedUnit.GetStatusEffects())
+                foreach (var effect in concreteUnit.GetStatusEffects())
                 {
                     CreateStatusEffectUI(effect);
                 }
+            }
+            else
+            {
+                if (originText != null) originText.text = "Unknown";
+                if (callingText != null) callingText.text = "Unknown";
+                
+                // Fallback HP display if we can't get MaxHealth
+                UpdateHPDisplay(currentUnit.CurrentHealth, currentUnit.CurrentHealth);
+                SmartLogger.LogWarning("Could not get MaxHealth via concrete cast in UpdateAllInfo.", LogCategory.UI, this);
+                
+                // Reset Aura display
+                if (auraSlider != null) auraSlider.value = 0;
+                if (auraText != null) auraText.text = "0/0";
             }
         }
 
@@ -121,39 +232,49 @@ namespace Dokkaebi.UI
         {
             if (hpSlider != null)
             {
-                hpSlider.value = maxHP > 0 ? (float)currentHP / maxHP : 0;
+                hpSlider.maxValue = maxHP > 0 ? maxHP : 1;
+                hpSlider.value = currentHP;
             }
             if (hpText != null)
             {
-                hpText.text = $"{currentHP}/{maxHP}";
+                hpText.text = $"{currentHP} / {maxHP}";
             }
         }
 
         private void HandleDamageTaken(int amount, DamageType damageType)
         {
-            if (currentUnit != null)
+            if (currentUnit != null && currentUnit is DokkaebiUnit concreteUnit)
             {
-                UpdateHPDisplay(currentUnit.CurrentHealth, currentUnit.CurrentHealth);
+                UpdateHPDisplay(currentUnit.CurrentHealth, concreteUnit.MaxHealth);
             }
         }
 
         private void HandleHealingReceived(int amount)
         {
-            if (currentUnit != null)
+            if (currentUnit != null && currentUnit is DokkaebiUnit concreteUnit)
             {
-                UpdateHPDisplay(currentUnit.CurrentHealth, currentUnit.CurrentHealth);
+                UpdateHPDisplay(currentUnit.CurrentHealth, concreteUnit.MaxHealth);
             }
         }
 
-        private void UpdateMPDisplay(int currentMP, int maxMP)
+        private void UpdateAuraDisplay(int currentAura, int maxAura)
         {
-            if (mpSlider != null)
+            if (auraSlider != null)
             {
-                mpSlider.value = maxMP > 0 ? (float)currentMP / maxMP : 0;
+                auraSlider.maxValue = maxAura > 0 ? maxAura : 1;
+                auraSlider.value = currentAura;
             }
-            if (mpText != null)
+            if (auraText != null)
             {
-                mpText.text = $"{currentMP}/{maxMP}";
+                auraText.text = $"{currentAura} / {maxAura}";
+            }
+        }
+
+        private void HandleUnitAuraChanged(int oldAura, int newAura)
+        {
+            if (currentUnit != null && currentUnit is DokkaebiUnit concreteUnit)
+            {
+                UpdateAuraDisplay(newAura, concreteUnit.GetMaxUnitAura());
             }
         }
 
@@ -175,13 +296,22 @@ namespace Dokkaebi.UI
 
             GameObject effectUI = Instantiate(statusEffectPrefab, statusEffectContainer);
             
-            // Update UI elements based on the status effect
-            var effectIcon = effectUI.GetComponentInChildren<Image>();
-            var effectText = effectUI.GetComponentInChildren<TextMeshProUGUI>();
-            
-            if (effectText != null)
+            // Try to get the StatusEffectDisplay component
+            var statusEffectDisplay = effectUI.GetComponent<StatusEffectDisplay>();
+            if (statusEffectDisplay != null)
             {
-                effectText.text = $"{effect.RemainingTurns}";
+                statusEffectDisplay.Initialize(effect.Effect);
+            }
+            else
+            {
+                // Fallback to basic display if StatusEffectDisplay component not found
+                var effectIcon = effectUI.GetComponentInChildren<Image>();
+                var effectText = effectUI.GetComponentInChildren<TextMeshProUGUI>();
+                
+                if (effectText != null)
+                {
+                    effectText.text = $"{effect.RemainingTurns}";
+                }
             }
 
             activeStatusEffects[effect.StatusEffectType] = effectUI;
