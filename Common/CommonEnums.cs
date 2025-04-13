@@ -41,25 +41,6 @@ namespace Dokkaebi.Common
     }
 
     /// <summary>
-    /// Types of unit attributes
-    /// </summary>
-    public enum UnitAttributeType
-    {
-        Strength,
-        Intelligence,
-        Agility,
-        MaxHealth,
-        HealthRegen,
-        MaxMP,
-        MPRegen,
-        MovementRange,
-        AttackPower,
-        DefensePower,
-        CriticalChance,
-        CriticalDamage
-    }
-
-    /// <summary>
     /// Team types for units
     /// </summary>
     public enum TeamType

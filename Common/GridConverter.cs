@@ -1,5 +1,6 @@
 using UnityEngine;
 using Dokkaebi.Interfaces;
+using Dokkaebi.Utilities;
 
 namespace Dokkaebi.Common
 {
@@ -25,14 +26,21 @@ namespace Dokkaebi.Common
         /// </summary>
         public static Vector3 GridToWorld(GridPosition gridPosition, float height = -1f)
         {
-            // Use provided height or default
+            // Log input parameters
+            //SmartLogger.Log($"[GridConverter.GridToWorld INTERNAL] Input GridPos: {gridPosition}, Input Height: {height}", LogCategory.Grid);
+            //SmartLogger.Log($"[GridConverter.GridToWorld INTERNAL] Using Static Values - Origin: {GridOrigin}, CellSize: {CellSize}, DefaultHeight: {DefaultGridHeight}", LogCategory.Grid);
+
+            // Calculate world position
+            float worldX = GridOrigin.x + (gridPosition.x * CellSize) + (CellSize / 2f);
+            float worldZ = GridOrigin.z + (gridPosition.z * CellSize) + (CellSize / 2f);
             float yPos = height >= 0 ? height : DefaultGridHeight;
-            
-            return new Vector3(
-                GridOrigin.x + (gridPosition.x * CellSize) + (CellSize / 2f),
-                yPos,
-                GridOrigin.z + (gridPosition.z * CellSize) + (CellSize / 2f)
-            );
+
+            // Log intermediate calculations
+            //SmartLogger.Log($"[GridConverter.GridToWorld INTERNAL] Calculations - Base X: {GridOrigin.x + (gridPosition.x * CellSize)}, Base Z: {GridOrigin.z + (gridPosition.z * CellSize)}", LogCategory.Grid);
+            //SmartLogger.Log($"[GridConverter.GridToWorld INTERNAL] Calculations - Cell Center Offset: {CellSize / 2f}", LogCategory.Grid);
+            //SmartLogger.Log($"[GridConverter.GridToWorld INTERNAL] Final World Position: ({worldX}, {yPos}, {worldZ})", LogCategory.Grid);
+
+            return new Vector3(worldX, yPos, worldZ);
         }
 
         /// <summary>
@@ -40,18 +48,22 @@ namespace Dokkaebi.Common
         /// </summary>
         public static GridPosition WorldToGrid(Vector3 worldPosition)
         {
-            // Subtract the centering offset before converting to grid coordinates
-            float centeredX = worldPosition.x - (CellSize / 2f);
-            float centeredZ = worldPosition.z - (CellSize / 2f);
-            
-            // Convert to grid coordinates
-            int x = Mathf.FloorToInt((centeredX - GridOrigin.x) / CellSize);
-            int z = Mathf.FloorToInt((centeredZ - GridOrigin.z) / CellSize);
-            
-            // Clamp to valid grid range (assuming 10x10 grid)
-            x = Mathf.Clamp(x, 0, 9);
-            z = Mathf.Clamp(z, 0, 9);
-            
+            // Calculate grid coordinates relative to the origin
+            float relativeX = worldPosition.x - GridOrigin.x;
+            float relativeZ = worldPosition.z - GridOrigin.z;
+
+            // Convert to grid coordinates using FloorToInt for consistency
+            // (Clicking anywhere within a tile should map to that tile's index)
+            int x = Mathf.FloorToInt(relativeX / CellSize);
+            int z = Mathf.FloorToInt(relativeZ / CellSize);
+
+            // Clamp to valid grid range (assuming gridWidth and gridHeight are accessible or defined constants)
+            // You might need to fetch these values from GridManager if they are not static/const
+            int gridWidth = 10;  // Assuming 10 based on your description
+            int gridHeight = 10; // Assuming 10 based on your description
+            x = Mathf.Clamp(x, 0, gridWidth - 1);
+            z = Mathf.Clamp(z, 0, gridHeight - 1);
+
             return new GridPosition(x, z);
         }
 

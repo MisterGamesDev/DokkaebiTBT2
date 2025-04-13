@@ -100,30 +100,4 @@ namespace Dokkaebi.Common
         /// </summary>
         void RemoveStatusEffect(StatusEffectType statusEffectType);
     }
-    
-    /// <summary>
-    /// Interface for status effect instances applied to units
-    /// </summary>
-    public interface IStatusEffectInstance
-    {
-        /// <summary>
-        /// Type of status effect
-        /// </summary>
-        StatusEffectType StatusEffectType { get; }
-        
-        /// <summary>
-        /// Duration in turns
-        /// </summary>
-        int Duration { get; }
-        
-        /// <summary>
-        /// Current remaining turns
-        /// </summary>
-        int RemainingTurns { get; }
-        
-        /// <summary>
-        /// ID of the unit that applied this status effect
-        /// </summary>
-        int SourceUnitId { get; }
-    }
 } 
